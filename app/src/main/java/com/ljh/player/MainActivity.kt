@@ -138,7 +138,7 @@ class MainActivity : Activity() {
                     val code = connection.responseCode
                     val contentType = connection.contentType ?: "(未提供)"
                     val stream = if (code in 200..399) connection.inputStream else connection.errorStream
-                    val body = stream?.use { it.readNBytes(64 * 1024).toString(Charset.forName("UTF-8")) } ?: ""
+                    val body = stream?.use { it.readBytes().take(64 * 1024).toByteArray().toString(Charset.forName("UTF-8")) } ?: ""
                     val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
                     val json = runCatching { JSONObject(trimmed) }.getOrNull()
                     val fields = json?.keys()?.asSequence()?.take(40)?.toList().orEmpty()
