@@ -256,7 +256,12 @@ class MainActivity : Activity() {
             showStatus("该站点没有标准 API 地址")
             return
         }
-        val base = site.api.trim()
+        val rawApi = site.api.trim()
+        val base = when {
+            rawApi.startsWith("https://", ignoreCase = true) || rawApi.startsWith("http://", ignoreCase = true) -> rawApi
+            rawApi.startsWith("//") -> "https:$rawApi"
+            else -> "https://$rawApi"
+        }
         loadVodPage(site, base, null, 1)
     }
 
