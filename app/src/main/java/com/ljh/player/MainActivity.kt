@@ -52,7 +52,7 @@ class MainActivity : Activity() {
             setPadding(0, 4, 0, 18)
         })
         sourceInput = EditText(this).apply {
-            singleLine = true
+            isSingleLine = true
             textSize = 16f
             hint = "输入 TVBox 配置 URL"
             setText(prefs.getString("source", defaultSource))
