@@ -167,9 +167,23 @@ class MainActivity : Activity() {
                 val (code, body) = getText(source)
                 if (code !in 200..399) error("HTTP 状态码：$code")
                 val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
-                val json = JSONObject(trimmed)
-                val sites = json.optJSONArray("sites")
-                    ?: error("响应是 JSON，但没有 sites 数组；这可能不是 TVBox 点播配置。顶层字段：${json.keys().asSequence().toList().joinToString()}")
+                val fields: List<String>
+                val sites: JSONArray
+                when {
+                    trimmed.startsWith("{") -> {
+                        val json = JSONObject(trimmed)
+                        fields = json.keys().asSequence().toList()
+                        sites = json.optJSONArray("sites")
+                            ?: json.optJSONArray("data")
+                            ?: error("响应是 JSON 对象，但没有 sites 或 data 数组。顶层字段：${fields.joinToString()}；响应开头：${trimmed.take(180)}")
+                    }
+                    trimmed.startsWith("[") -> {
+                        // Some source endpoints return the site list itself as a top-level JSON array.
+                        sites = JSONArray(trimmed)
+                        fields = listOf("(顶层 JSON 数组)")
+                    }
+                    else -> error("响应不是 JSON 对象或数组。响应开头：${trimmed.take(180)}")
+                }
                 val siteData = (0 until sites.length()).mapNotNull { index ->
                     sites.optJSONObject(index)?.let { site ->
                         SiteInfo(
@@ -181,7 +195,8 @@ class MainActivity : Activity() {
                         )
                     }
                 }
-                ConfigResult(code, json.keys().asSequence().toList(), siteData)
+                if (siteData.isEmpty()) error("找到了 JSON 数组，但其中没有可识别的站点对象（需要 name/api 字段）。")
+                ConfigResult(code, fields, siteData)
             }.fold(
                 onSuccess = { it },
                 onFailure = { ConfigResult(-1, emptyList(), emptyList(), it.message ?: it.javaClass.simpleName) }
