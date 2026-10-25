@@ -240,12 +240,72 @@ class MainActivity : Activity() {
                     output.text = "HTTP：${result.httpCode}\n顶层字段：${result.fields.joinToString()}\n识别到点播站点：${result.sites.size}\n\n附加配置：\n${result.configSummary}\n\n选择站点可查看其 API 信息。"
                     result.sites.forEach { site ->
                         itemList.addView(actionButton("${site.name}  ·  ${if (site.searchable) "支持搜索" else "搜索未标记"}") {
-                            output.text = "站点：${site.name}\nAPI：${site.api}\n类型：${site.type}\n可搜索：${site.searchable}\n快速搜索：${site.quickSearch}\n\n说明：已成功读取站点配置。不同站点 API 格式不同，影片分类、列表与播放解析还需按该站点接口适配。"
-                            showStatus("已选择站点：${site.name}")
+                            inspectSiteApi(site)
                         })
                     }
                     showStatus(if (result.sites.isEmpty()) "配置已读取，但 sites 为空" else "配置读取成功：${result.sites.size} 个站点")
                 }
+            }
+        }
+    }
+
+
+    private fun inspectSiteApi(site: SiteInfo) {
+        if (site.api.isBlank()) {
+            output.text = "站点：${site.name}\n这个站点没有提供 api 地址，可能依赖 Spider 或其他特殊引擎，当前版本无法直接请求。"
+            showStatus("该站点没有标准 API 地址")
+            return
+        }
+        val base = site.api.trim()
+        val categoryUrl = when {
+            base.contains("ac=list") -> base
+            base.contains("?") -> base + "&ac=list"
+            else -> base + "?ac=list"
+        }
+        showStatus("已选择 ${site.name}，正在测试分类接口…")
+        output.text = "站点：${site.name}\nAPI：$base\n正在请求分类接口：\n$categoryUrl"
+        executor.execute {
+            val result = runCatching {
+                val connection = openConnection(categoryUrl)
+                try {
+                    val code = connection.responseCode
+                    val contentType = connection.contentType ?: "(未提供)"
+                    val finalUrl = connection.url.toString()
+                    val body = (if (code in 200..399) connection.inputStream else connection.errorStream)
+                        ?.use { stream ->
+                            val bytes = stream.readBytes().take(64 * 1024).toByteArray()
+                            String(bytes, Charset.forName("UTF-8"))
+                        } ?: ""
+                    val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+                    val json = runCatching { JSONObject(trimmed) }.getOrNull()
+                    buildString {
+                        appendLine("站点：${site.name}")
+                        appendLine("HTTP：$code")
+                        appendLine("Content-Type：$contentType")
+                        appendLine("最终 URL：$finalUrl")
+                        appendLine("请求接口：$categoryUrl")
+                        appendLine("响应判断：" + when {
+                            json != null -> "返回 JSON 对象，顶层字段：" + json.keys().asSequence().toList().joinToString()
+                            runCatching { JSONArray(trimmed) }.isSuccess -> "返回 JSON 数组"
+                            trimmed.startsWith("<!DOCTYPE", true) || trimmed.startsWith("<html", true) -> "返回 HTML 网页，不是预期的 JSON API 响应"
+                            trimmed.startsWith("ÿØ") || contentType.contains("image/", true) -> "返回图片数据，不是 JSON"
+                            trimmed.isBlank() -> "响应为空"
+                            else -> "返回非 JSON 内容"
+                        })
+                        appendLine()
+                        appendLine("响应内容预览（最多 1200 字符）：")
+                        append(trimmed.take(1200).ifBlank { "(空)" })
+                        appendLine()
+                        appendLine()
+                        append("提示：如果这是标准苹果 CMS API，分类接口通常使用 ?ac=list；不同类型站点可能需要专用适配。")
+                    }
+                } finally {
+                    connection.disconnect()
+                }
+            }.getOrElse { "请求站点 API 失败：${it.javaClass.simpleName}: ${it.message ?: "未知错误"}\n接口：$categoryUrl" }
+            runOnUiThread {
+                output.text = result
+                showStatus("站点接口测试完成")
             }
         }
     }
