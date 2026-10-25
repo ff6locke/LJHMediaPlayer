@@ -239,7 +239,7 @@ class MainActivity : Activity() {
                 } else {
                     output.text = "HTTP：${result.httpCode}\n顶层字段：${result.fields.joinToString()}\n识别到点播站点：${result.sites.size}\n\n附加配置：\n${result.configSummary}\n\n选择站点可查看其 API 信息。"
                     result.sites.forEach { site ->
-                        itemList.addView(actionButton("${site.name}  ·  ${if (site.searchable) "支持搜索" else "搜索未标记"}") {
+                        itemList.addView(actionButton("${site.name}  ·  type=${site.type}  ·  ${if (site.searchable) "支持搜索" else "搜索未标记"}") {
                             inspectSiteApi(site)
                         })
                     }
@@ -252,15 +252,34 @@ class MainActivity : Activity() {
 
     private fun inspectSiteApi(site: SiteInfo) {
         if (site.api.isBlank()) {
-            output.text = "站点：${site.name}\n这个站点没有提供 api 地址，可能依赖 Spider 或其他特殊引擎，当前版本无法直接请求。"
-            showStatus("该站点没有标准 API 地址")
+            output.text = "站点：${site.name}\n站点类型：${site.type}\n这个站点没有提供 api 地址，可能依赖 Spider、扩展配置或其他特殊引擎。\n\n当前版本只直接请求标准 CMS JSON API，暂不支持执行 Spider。"
+            showStatus("该站点没有可直接请求的 API")
             return
         }
+
+        // TVBox site types are not interchangeable. Do not treat XPath/Spider sites as CMS APIs.
+        if (site.type != 0) {
+            val typeDescription = when (site.type) {
+                1 -> "XPath 网页解析站点"
+                3 -> "Spider/爬虫引擎站点"
+                else -> "非标准 CMS JSON 站点"
+            }
+            output.text = "站点：${site.name}\n站点类型：${site.type}（$typeDescription）\nAPI：${site.api}\n\n当前版本的点播加载器只支持 type=0 的标准 JSON API，因此不会错误地向此地址追加 ?ac=list。\n\n下一步需要为该类型接入对应解析器；如果是 Spider 站点，还需要兼容其 Spider 引擎及配置。"
+            showStatus("暂不支持此站点类型：${site.type}")
+            return
+        }
+
         val rawApi = site.api.trim()
         val base = when {
             rawApi.startsWith("https://", ignoreCase = true) || rawApi.startsWith("http://", ignoreCase = true) -> rawApi
             rawApi.startsWith("//") -> "https:$rawApi"
-            else -> "https://$rawApi"
+            rawApi.startsWith("www.", ignoreCase = true) -> "https://$rawApi"
+            rawApi.contains(".") && !rawApi.contains(" ") && !rawApi.startsWith("csp_", ignoreCase = true) -> "https://$rawApi"
+            else -> {
+                output.text = "站点：${site.name}\n站点类型：${site.type}\nAPI：$rawApi\n\nAPI 值看起来不是完整网址。它可能是 Spider 标识符或特殊协议，不能自动补成 HTTPS。"
+                showStatus("API 地址格式无法识别")
+                return
+            }
         }
         loadVodPage(site, base, null, 1)
     }
