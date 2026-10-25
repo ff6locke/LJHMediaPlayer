@@ -24,7 +24,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var output: TextView
     private lateinit var itemList: LinearLayout
-    private val defaultSource = "http://www.饭太硬.cc/tv"
+    private val defaultSource = "http://fty.xxooo.cf/tv"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -57,7 +57,7 @@ class MainActivity : Activity() {
             isSingleLine = true
             textSize = 16f
             hint = "输入 TVBox 配置 URL"
-            setText(prefs.getString("source", defaultSource))
+            setText(prefs.getString("source", null).let { saved -> if (saved.isNullOrBlank() || saved == "http://www.饭太硬.cc/tv") defaultSource else saved })
             setTextColor(0xFFFFFFFF.toInt())
             setHintTextColor(0xFF8B96A9.toInt())
             setSelectAllOnFocus(true)
@@ -271,6 +271,7 @@ class MainActivity : Activity() {
                             jsonArray != null -> "有效 JSON 数组（共 ${jsonArray.length()} 项）"
                             trimmed.startsWith("<!DOCTYPE", true) || trimmed.startsWith("<html", true) -> "HTML 网页，不是直接可识别的 TVBox JSON"
                             trimmed.isBlank() -> "空响应"
+                            trimmed.startsWith("ÿØ") || contentType.contains("image/jpeg", true) -> "服务器返回 JPEG 图片（JFIF/JPEG），不是 JSON 配置"
                             else -> "非 JSON 或未知格式"
                         })
                         if (fields.isNotEmpty()) appendLine("JSON 顶层字段：${fields.joinToString()}")
