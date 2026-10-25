@@ -324,7 +324,7 @@ class MainActivity : Activity() {
                     })
                 }
                 if (parsed.movies.isEmpty() && parsed.categories.isEmpty()) {
-                    output.text += "\n\n接口返回 JSON，但没有识别到 class/list 字段。请检查响应结构。"
+                    output.text = output.text.toString() + "\n\n接口返回 JSON，但没有识别到 class/list 字段。请检查响应结构。"
                 }
                 showStatus("已加载 ${parsed.categories.size} 个分类、${parsed.movies.size} 部影片")
             }
