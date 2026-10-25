@@ -257,57 +257,87 @@ class MainActivity : Activity() {
             return
         }
         val base = site.api.trim()
-        val categoryUrl = when {
-            base.contains("ac=list") -> base
-            base.contains("?") -> base + "&ac=list"
-            else -> base + "?ac=list"
-        }
-        showStatus("已选择 ${site.name}，正在测试分类接口…")
-        output.text = "站点：${site.name}\nAPI：$base\n正在请求分类接口：\n$categoryUrl"
+        loadVodPage(site, base, null, 1)
+    }
+
+    private fun loadVodPage(site: SiteInfo, base: String, category: VodCategory?, page: Int) {
+        val params = linkedMapOf("ac" to "list", "pg" to page.toString())
+        if (category != null) params["t"] = category.id
+        val requestUrl = appendApiParams(base, params)
+        showStatus(if (category == null) "正在加载分类和影片…" else "正在加载“${category.name}”影片…")
+        output.text = "站点：${site.name}\n请求：$requestUrl\n正在读取影片数据…"
+        itemList.removeAllViews()
         executor.execute {
-            val result = runCatching {
-                val connection = openConnection(categoryUrl)
+            val parsed = runCatching {
+                val connection = openConnection(requestUrl)
                 try {
                     val code = connection.responseCode
                     val contentType = connection.contentType ?: "(未提供)"
-                    val finalUrl = connection.url.toString()
                     val body = (if (code in 200..399) connection.inputStream else connection.errorStream)
-                        ?.use { stream ->
-                            val bytes = stream.readBytes().take(64 * 1024).toByteArray()
-                            String(bytes, Charset.forName("UTF-8"))
-                        } ?: ""
+                        ?.use { stream -> String(stream.readBytes().take(1024 * 1024).toByteArray(), Charset.forName("UTF-8")) } ?: ""
+                    if (code !in 200..399) error("HTTP $code；Content-Type：$contentType")
                     val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
                     val json = runCatching { JSONObject(trimmed) }.getOrNull()
-                    buildString {
-                        appendLine("站点：${site.name}")
-                        appendLine("HTTP：$code")
-                        appendLine("Content-Type：$contentType")
-                        appendLine("最终 URL：$finalUrl")
-                        appendLine("请求接口：$categoryUrl")
-                        appendLine("响应判断：" + when {
-                            json != null -> "返回 JSON 对象，顶层字段：" + json.keys().asSequence().toList().joinToString()
-                            runCatching { JSONArray(trimmed) }.isSuccess -> "返回 JSON 数组"
-                            trimmed.startsWith("<!DOCTYPE", true) || trimmed.startsWith("<html", true) -> "返回 HTML 网页，不是预期的 JSON API 响应"
-                            trimmed.startsWith("ÿØ") || contentType.contains("image/", true) -> "返回图片数据，不是 JSON"
-                            trimmed.isBlank() -> "响应为空"
-                            else -> "返回非 JSON 内容"
-                        })
-                        appendLine()
-                        appendLine("响应内容预览（最多 1200 字符）：")
-                        append(trimmed.take(1200).ifBlank { "(空)" })
-                        appendLine()
-                        appendLine()
-                        append("提示：如果这是标准苹果 CMS API，分类接口通常使用 ?ac=list；不同类型站点可能需要专用适配。")
+                        ?: error("接口没有返回 JSON 对象。Content-Type：$contentType；响应开头：${trimmed.take(160)}")
+                    val data = json.optJSONObject("data") ?: json
+                    val classArray = data.optJSONArray("class") ?: json.optJSONArray("class") ?: JSONArray()
+                    val listArray = data.optJSONArray("list") ?: json.optJSONArray("list") ?: JSONArray()
+                    val categories = (0 until classArray.length()).mapNotNull { i ->
+                        val item = classArray.optJSONObject(i) ?: return@mapNotNull null
+                        val id = item.opt("type_id").safeString("")
+                        val name = item.opt("type_name").safeString("")
+                        if (id.isBlank() || name.isBlank()) null else VodCategory(id, name)
                     }
+                    val movies = (0 until listArray.length()).mapNotNull { i ->
+                        val item = listArray.optJSONObject(i) ?: return@mapNotNull null
+                        val id = item.opt("vod_id").safeString("")
+                        val name = item.opt("vod_name").safeString("未命名影片")
+                        if (id.isBlank()) null else VodMovie(
+                            id = id,
+                            name = name,
+                            remarks = item.opt("vod_remarks").safeString(""),
+                            year = item.opt("vod_year").safeString(""),
+                            pic = item.opt("vod_pic").safeString("")
+                        )
+                    }
+                    VodPageResult(categories, movies, json.optString("msg", ""))
                 } finally {
                     connection.disconnect()
                 }
-            }.getOrElse { "请求站点 API 失败：${it.javaClass.simpleName}: ${it.message ?: "未知错误"}\n接口：$categoryUrl" }
+            }.getOrElse { VodPageResult(emptyList(), emptyList(), it.message ?: "未知错误", error = true) }
             runOnUiThread {
-                output.text = result
-                showStatus("站点接口测试完成")
+                if (parsed.error) {
+                    output.text = "站点：${site.name}\n加载失败：${parsed.message}\n\n该站点可能不是标准苹果 CMS JSON API，或需要 Spider/专用适配。"
+                    showStatus("影片加载失败")
+                    return@runOnUiThread
+                }
+                output.text = "站点：${site.name}\n分类：${parsed.categories.size} 个\n影片：${parsed.movies.size} 部\n选择分类筛选影片，选择影片可查看基本信息。"
+                parsed.categories.forEach { cat ->
+                    itemList.addView(actionButton("分类：${cat.name}") {
+                        loadVodPage(site, base, cat, 1)
+                    })
+                }
+                parsed.movies.forEach { movie ->
+                    itemList.addView(actionButton("${movie.name}${if (movie.remarks.isNotBlank()) " · ${movie.remarks}" else ""}") {
+                        output.text = "影片：${movie.name}\n分类：${category?.name ?: "全部"}\n年份：${movie.year}\n备注：${movie.remarks}\n影片 ID：${movie.id}\n图片：${movie.pic}\n\n下一步将接入详情、播放线路和视频播放器。"
+                        showStatus("已选择影片：${movie.name}")
+                    })
+                }
+                if (parsed.movies.isEmpty() && parsed.categories.isEmpty()) {
+                    output.text += "\n\n接口返回 JSON，但没有识别到 class/list 字段。请检查响应结构。"
+                }
+                showStatus("已加载 ${parsed.categories.size} 个分类、${parsed.movies.size} 部影片")
             }
         }
+    }
+
+    private fun appendApiParams(base: String, params: Map<String, String>): String {
+        val separator = if (base.contains("?")) "&" else "?"
+        val encoded = params.entries.joinToString("&") {
+            java.net.URLEncoder.encode(it.key, "UTF-8") + "=" + java.net.URLEncoder.encode(it.value, "UTF-8")
+        }
+        return base + separator + encoded
+    }
     }
 
     private fun Any?.safeString(fallback: String): String = when (this) {
@@ -322,6 +352,23 @@ class MainActivity : Activity() {
         is Boolean -> if (this) 1 else 0
         else -> fallback
     }
+
+    private data class VodCategory(val id: String, val name: String)
+
+    private data class VodMovie(
+        val id: String,
+        val name: String,
+        val remarks: String,
+        val year: String,
+        val pic: String
+    )
+
+    private data class VodPageResult(
+        val categories: List<VodCategory>,
+        val movies: List<VodMovie>,
+        val message: String = "",
+        val error: Boolean = false
+    )
 
     private data class SiteInfo(
         val name: String,
