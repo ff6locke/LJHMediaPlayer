@@ -338,7 +338,6 @@ class MainActivity : Activity() {
         }
         return base + separator + encoded
     }
-    }
 
     private fun Any?.safeString(fallback: String): String = when (this) {
         null, JSONObject.NULL -> fallback
