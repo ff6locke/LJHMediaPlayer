@@ -164,39 +164,70 @@ class MainActivity : Activity() {
         itemList.removeAllViews()
         executor.execute {
             val result = runCatching {
-                val (code, body) = getText(source)
-                if (code !in 200..399) error("HTTP 状态码：$code")
+                val connection = openConnection(source)
+                val code: Int
+                val contentType: String
+                val body: String
+                try {
+                    code = connection.responseCode
+                    contentType = connection.contentType ?: "(未提供)"
+                    val stream = if (code in 200..399) connection.inputStream else connection.errorStream
+                    body = stream?.use {
+                        String(it.readBytes().take(1024 * 1024).toByteArray(), Charset.forName("UTF-8"))
+                    } ?: ""
+                } finally {
+                    connection.disconnect()
+                }
+                if (code !in 200..399) error("HTTP 状态码：" + code + "；Content-Type：" + contentType)
                 val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+                if (trimmed.startsWith("<!DOCTYPE", true) || trimmed.startsWith("<html", true)) {
+                    error("服务器返回 HTML 网页，不是 JSON 配置。Content-Type：" + contentType)
+                }
+                if (trimmed.startsWith("ÿØ") || contentType.contains("image/", true)) {
+                    error("服务器返回图片而不是 JSON 配置。Content-Type：" + contentType)
+                }
                 val fields: List<String>
                 val sites: JSONArray
+                val configSummary: String
                 when {
                     trimmed.startsWith("{") -> {
                         val json = JSONObject(trimmed)
                         fields = json.keys().asSequence().toList()
                         sites = json.optJSONArray("sites")
                             ?: json.optJSONArray("data")
-                            ?: error("响应是 JSON 对象，但没有 sites 或 data 数组。顶层字段：${fields.joinToString()}；响应开头：${trimmed.take(180)}")
+                            ?: error("JSON 对象中没有 sites/data 数组。顶层字段：" + fields.joinToString())
+                        val configKeys = listOf("spider", "wallpaper", "lives", "parses", "flags", "ads", "ijk", "doh")
+                        configSummary = configKeys.mapNotNull { key ->
+                            if (!json.has(key) || json.isNull(key)) null
+                            else {
+                                val value = json.opt(key)
+                                key + "：" + when (value) {
+                                    is JSONArray -> "数组 " + value.length() + " 项"
+                                    is JSONObject -> "对象"
+                                    else -> value.toString().take(120)
+                                }
+                            }
+                        }.joinToString("\n").ifBlank { "未发现 spider/wallpaper/lives 等附加字段" }
                     }
                     trimmed.startsWith("[") -> {
-                        // Some source endpoints return the site list itself as a top-level JSON array.
                         sites = JSONArray(trimmed)
                         fields = listOf("(顶层 JSON 数组)")
+                        configSummary = "顶层直接返回站点数组"
                     }
-                    else -> error("响应不是 JSON 对象或数组。响应开头：${trimmed.take(180)}")
+                    else -> error("响应不是 JSON 对象或数组。Content-Type：" + contentType + "；响应开头：" + trimmed.take(180))
                 }
                 val siteData = (0 until sites.length()).mapNotNull { index ->
-                    sites.optJSONObject(index)?.let { site ->
-                        SiteInfo(
-                            name = site.optString("name", "未命名站点"),
-                            api = site.optString("api", ""),
-                            type = site.optInt("type", 0),
-                            searchable = site.optInt("searchable", 0) == 1,
-                            quickSearch = site.optInt("quickSearch", 0) == 1
-                        )
-                    }
+                    val site = sites.optJSONObject(index) ?: return@mapNotNull null
+                    SiteInfo(
+                        name = site.opt("name").safeString("未命名站点"),
+                        api = site.opt("api").safeString(""),
+                        type = site.opt("type").safeInt(0),
+                        searchable = site.opt("searchable").safeInt(0) == 1,
+                        quickSearch = site.opt("quickSearch").safeInt(0) == 1
+                    )
                 }
-                if (siteData.isEmpty()) error("找到了 JSON 数组，但其中没有可识别的站点对象（需要 name/api 字段）。")
-                ConfigResult(code, fields, siteData)
+                if (siteData.isEmpty()) error("JSON 已读取，但 sites/data 数组中没有可识别的站点对象。")
+                ConfigResult(code, fields, siteData, configSummary = configSummary)
             }.fold(
                 onSuccess = { it },
                 onFailure = { ConfigResult(-1, emptyList(), emptyList(), it.message ?: it.javaClass.simpleName) }
@@ -206,7 +237,7 @@ class MainActivity : Activity() {
                     output.text = "读取失败：${result.error}\n\n请确认这个地址直接返回 TVBox JSON，而不是导航网页。"
                     showStatus("配置读取失败")
                 } else {
-                    output.text = "HTTP：${result.httpCode}\n顶层字段：${result.fields.joinToString()}\n识别到点播站点：${result.sites.size}\n\n选择站点可查看其 API 信息。"
+                    output.text = "HTTP：${result.httpCode}\n顶层字段：${result.fields.joinToString()}\n识别到点播站点：${result.sites.size}\n\n附加配置：\n${result.configSummary}\n\n选择站点可查看其 API 信息。"
                     result.sites.forEach { site ->
                         itemList.addView(actionButton("${site.name}  ·  ${if (site.searchable) "支持搜索" else "搜索未标记"}") {
                             output.text = "站点：${site.name}\nAPI：${site.api}\n类型：${site.type}\n可搜索：${site.searchable}\n快速搜索：${site.quickSearch}\n\n说明：已成功读取站点配置。不同站点 API 格式不同，影片分类、列表与播放解析还需按该站点接口适配。"
@@ -217,6 +248,19 @@ class MainActivity : Activity() {
                 }
             }
         }
+    }
+
+    private fun Any?.safeString(fallback: String): String = when (this) {
+        null, JSONObject.NULL -> fallback
+        is String -> this
+        else -> toString()
+    }
+
+    private fun Any?.safeInt(fallback: Int): Int = when (this) {
+        is Number -> toInt()
+        is String -> toIntOrNull() ?: fallback
+        is Boolean -> if (this) 1 else 0
+        else -> fallback
     }
 
     private data class SiteInfo(
@@ -231,7 +275,8 @@ class MainActivity : Activity() {
         val httpCode: Int,
         val fields: List<String>,
         val sites: List<SiteInfo>,
-        val error: String? = null
+        val error: String? = null,
+        val configSummary: String = ""
     )
 
     private fun probeSource() {
