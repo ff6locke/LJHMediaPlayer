@@ -255,8 +255,9 @@ class MainActivity : Activity() {
                         String(bytes.take(64 * 1024).toByteArray(), Charset.forName("UTF-8"))
                     } ?: ""
                     val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
-                    val json = runCatching { JSONObject(trimmed) }.getOrNull()
-                    val fields = json?.keys()?.asSequence()?.take(40)?.toList().orEmpty()
+                    val jsonObject = runCatching { JSONObject(trimmed) }.getOrNull()
+                    val jsonArray = if (jsonObject == null) runCatching { JSONArray(trimmed) }.getOrNull() else null
+                    val fields = jsonObject?.keys()?.asSequence()?.take(40)?.toList().orEmpty()
                     buildString {
                         appendLine("请求地址：$source")
                         appendLine("HTTP 状态：$code")
@@ -264,13 +265,18 @@ class MainActivity : Activity() {
                         appendLine("响应长度（最多读取 64 KiB）：${body.toByteArray().size} bytes")
                         appendLine("响应类型：")
                         appendLine(when {
-                            json != null && json.has("sites") -> "TVBox 风格 JSON（发现 sites 字段）"
-                            json != null -> "有效 JSON，但未发现 sites 字段"
+                            jsonObject?.has("sites") == true -> "TVBox 风格 JSON 对象（发现 sites 字段）"
+                            jsonObject?.has("data") == true -> "JSON 对象（发现 data 字段）"
+                            jsonObject != null -> "有效 JSON 对象，但未发现 sites/data 字段"
+                            jsonArray != null -> "有效 JSON 数组（共 ${jsonArray.length()} 项）"
                             trimmed.startsWith("<!DOCTYPE", true) || trimmed.startsWith("<html", true) -> "HTML 网页，不是直接可识别的 TVBox JSON"
                             trimmed.isBlank() -> "空响应"
                             else -> "非 JSON 或未知格式"
                         })
                         if (fields.isNotEmpty()) appendLine("JSON 顶层字段：${fields.joinToString()}")
+                        appendLine()
+                        appendLine("响应内容开头（用于判断真实格式）：")
+                        appendLine(trimmed.take(500).ifBlank { "(空)" })
                     }
                 } finally {
                     connection.disconnect()
