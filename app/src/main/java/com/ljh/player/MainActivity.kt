@@ -257,6 +257,16 @@ class MainActivity : Activity() {
             return
         }
 
+        val rawApi = site.api.trim()
+
+        // Values such as csp_Douban/csp_douban are Spider class identifiers, not hostnames.
+        // Explain the missing runtime instead of attempting an HTTP request to that fake host.
+        if (rawApi.startsWith("csp_", ignoreCase = true)) {
+            output.text = "站点：${site.name}\n站点类型：${site.type}\nAPI 标识：$rawApi\n\n原因：$rawApi 是 TVBox Spider 类名，不是网址。\n“Unable to resolve host $rawApi” 表示播放器把类名当成域名请求了。\n\n当前 LJHPlayer 还没有加载配置中的 spider.jar 并调用 Spider 类的运行环境，因此不能直接执行此站点。需要接入兼容的 CatVod/TVBox Spider 引擎后，才能加载该站点。"
+            showStatus("这是 Spider 类名，不是网络域名")
+            return
+        }
+
         // TVBox site types are not interchangeable. Do not treat XPath/Spider sites as CMS APIs.
         if (site.type != 0) {
             val typeDescription = when (site.type) {
@@ -269,7 +279,6 @@ class MainActivity : Activity() {
             return
         }
 
-        val rawApi = site.api.trim()
         val base = when {
             rawApi.startsWith("https://", ignoreCase = true) || rawApi.startsWith("http://", ignoreCase = true) -> rawApi
             rawApi.startsWith("//") -> "https:$rawApi"
