@@ -264,8 +264,8 @@ class MainActivity : Activity() {
         // Values such as csp_Douban/csp_douban are Spider class identifiers, not hostnames.
         // Explain the missing runtime instead of attempting an HTTP request to that fake host.
         if (rawApi.startsWith("csp_", ignoreCase = true)) {
-            output.text = "站点：${site.name}\n站点类型：${site.type}\nAPI 标识：$rawApi\n\n原因：$rawApi 是 TVBox Spider 类名，不是网址。\n“Unable to resolve host $rawApi” 表示播放器把类名当成域名请求了。\n\n当前 LJHPlayer 还没有加载配置中的 spider.jar 并调用 Spider 类的运行环境，因此不能直接执行此站点。需要接入兼容的 CatVod/TVBox Spider 引擎后，才能加载该站点。"
-            showStatus("这是 Spider 类名，不是网络域名")
+            output.text = "站点：${site.name}\n站点类型：${site.type}\nSpider 类名：$rawApi\n\n诊断：这是 TVBox Spider 类名，不是网址；不能把它作为 HTTP 主机名请求。\n\n当前版本尚未执行 spider.jar，因此该站点暂不可用。请先在配置检测结果中确认 Spider 解析地址是否显示为完整的 http(s) URL。若地址为空或不是 URL，需要修正配置中的 spider 字段。\n\n注意：仅下载 JAR 仍不够，还需要确认它的 CatVod/TVBox 接口、依赖和调用方法，之后才能接入执行。"
+            showStatus("Spider 引擎未接入：$rawApi")
             return
         }
 
