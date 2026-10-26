@@ -189,6 +189,7 @@ class MainActivity : Activity() {
                 val fields: List<String>
                 val sites: JSONArray
                 val configSummary: String
+                var spiderRef = ""
                 when {
                     trimmed.startsWith("{") -> {
                         val json = JSONObject(trimmed)
@@ -196,6 +197,7 @@ class MainActivity : Activity() {
                         sites = json.optJSONArray("sites")
                             ?: json.optJSONArray("data")
                             ?: error("JSON 对象中没有 sites/data 数组。顶层字段：" + fields.joinToString())
+                        spiderRef = json.opt("spider").safeString("")
                         val configKeys = listOf("spider", "wallpaper", "lives", "parses", "flags", "ads", "ijk", "doh")
                         configSummary = configKeys.mapNotNull { key ->
                             if (!json.has(key) || json.isNull(key)) null
@@ -227,7 +229,7 @@ class MainActivity : Activity() {
                     )
                 }
                 if (siteData.isEmpty()) error("JSON 已读取，但 sites/data 数组中没有可识别的站点对象。")
-                ConfigResult(code, fields, siteData, configSummary = configSummary)
+                ConfigResult(code, fields, siteData, configSummary = configSummary, spiderUrl = resolveReference(source, spiderRef))
             }.fold(
                 onSuccess = { it },
                 onFailure = { ConfigResult(-1, emptyList(), emptyList(), it.message ?: it.javaClass.simpleName) }
@@ -237,7 +239,7 @@ class MainActivity : Activity() {
                     output.text = "读取失败：${result.error}\n\n请确认这个地址直接返回 TVBox JSON，而不是导航网页。"
                     showStatus("配置读取失败")
                 } else {
-                    output.text = "HTTP：${result.httpCode}\n顶层字段：${result.fields.joinToString()}\n识别到点播站点：${result.sites.size}\n\n附加配置：\n${result.configSummary}\n\n选择站点可查看其 API 信息。"
+                    output.text = "HTTP：${result.httpCode}\n顶层字段：${result.fields.joinToString()}\n识别到点播站点：${result.sites.size}\n\n附加配置：\n${result.configSummary}" + if (result.spiderUrl.isNotBlank()) "\n\nSpider 解析地址：\n${result.spiderUrl}\n\n注意：当前版本尚未执行 Spider JAR；这里只解析出地址，下一步需要检查 JAR 的兼容接口和依赖。" else "\n\n未配置 spider 地址。" + "\n\n选择站点可查看其 API 信息。"
                     result.sites.forEach { site ->
                         itemList.addView(actionButton("${site.name}  ·  type=${site.type}  ·  ${if (site.searchable) "支持搜索" else "搜索未标记"}") {
                             inspectSiteApi(site)
@@ -364,6 +366,14 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun resolveReference(baseUrl: String, reference: String): String {
+        val value = reference.trim()
+        if (value.isBlank()) return ""
+        return runCatching {
+            java.net.URI(baseUrl).resolve(value).toString()
+        }.getOrElse { value }
+    }
+
     private fun appendApiParams(base: String, params: Map<String, String>): String {
         val separator = if (base.contains("?")) "&" else "?"
         val encoded = params.entries.joinToString("&") {
@@ -415,7 +425,8 @@ class MainActivity : Activity() {
         val fields: List<String>,
         val sites: List<SiteInfo>,
         val error: String? = null,
-        val configSummary: String = ""
+        val configSummary: String = "",
+        val spiderUrl: String = ""
     )
 
     private fun probeSource() {
