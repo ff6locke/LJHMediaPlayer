@@ -228,6 +228,13 @@ class MainActivity : Activity() {
                         name = site.opt("name").safeString("未命名站点"),
                         api = site.opt("api").safeString(""),
                         type = site.opt("type").safeInt(0),
+                        jar = site.opt("jar").safeString(""),
+                        ext = when (val extValue = site.opt("ext")) {
+                            null, JSONObject.NULL -> ""
+                            is JSONObject -> "JSON 对象（${extValue.length()} 个字段）"
+                            is JSONArray -> "数组（${extValue.length()} 项）"
+                            else -> extValue.toString().take(300)
+                        },
                         searchable = site.opt("searchable").safeInt(0) == 1,
                         quickSearch = site.opt("quickSearch").safeInt(0) == 1
                     )
@@ -355,7 +362,8 @@ class MainActivity : Activity() {
         // Values such as csp_Douban/csp_douban are Spider class identifiers, not hostnames.
         // Explain the missing runtime instead of attempting an HTTP request to that fake host.
         if (rawApi.startsWith("csp_", ignoreCase = true)) {
-            output.text = "站点：${site.name}\n站点类型：${site.type}\nSpider 类名：$rawApi\n\n诊断：这是 TVBox Spider 类名，不是网址；不能把它作为 HTTP 主机名请求。\n\n当前版本尚未执行 spider.jar，因此该站点暂不可用。请先在配置检测结果中确认 Spider 解析地址是否显示为完整的 http(s) URL。若地址为空或不是 URL，需要修正配置中的 spider 字段。\n\n注意：仅下载 JAR 仍不够，还需要确认它的 CatVod/TVBox 接口、依赖和调用方法，之后才能接入执行。"
+            val siteJarUrl = if (site.jar.isNotBlank()) resolveReference(currentSource(), site.jar) else currentSpiderUrl
+            output.text = "站点：${site.name}\n站点类型：${site.type}\nSpider 类名：$rawApi\n站点 jar：${site.jar.ifBlank { "(未单独指定，使用顶层 spider)" }}\n解析后的 JAR 地址：${siteJarUrl.ifBlank { "(未配置)" }}\n扩展 ext：${site.ext.ifBlank { "(未提供)" }}\n\n诊断：这是 TVBox Spider 类名，不是网址；不能把它作为 HTTP 主机名请求。\n\n当前版本尚未执行 Spider JAR，因此该站点暂不可用。若站点单独提供 jar，优先使用该站点 jar；否则使用顶层 spider。下载按钮当前只检查顶层 Spider，站点独立 JAR 尚未分别下载。\n\n注意：仅下载 JAR 仍不够，还需要确认它的 CatVod/TVBox 接口、依赖和调用方法，之后才能接入执行。"
             showStatus("Spider 引擎未接入：$rawApi")
             return
         }
@@ -367,7 +375,8 @@ class MainActivity : Activity() {
                 3 -> "Spider/爬虫引擎站点"
                 else -> "非标准 CMS JSON 站点"
             }
-            output.text = "站点：${site.name}\n站点类型：${site.type}（$typeDescription）\nAPI：${site.api}\n\n当前版本的点播加载器只支持 type=0 的标准 JSON API，因此不会错误地向此地址追加 ?ac=list。\n\n下一步需要为该类型接入对应解析器；如果是 Spider 站点，还需要兼容其 Spider 引擎及配置。"
+            val siteJarUrl = if (site.jar.isNotBlank()) resolveReference(currentSource(), site.jar) else currentSpiderUrl
+            output.text = "站点：${site.name}\n站点类型：${site.type}（$typeDescription）\nAPI：${site.api}\n站点 jar：${site.jar.ifBlank { "(未单独指定)" }}\n解析后的 JAR 地址：${siteJarUrl.ifBlank { "(未配置)" }}\n扩展 ext：${site.ext.ifBlank { "(未提供)" }}\n\n当前版本的点播加载器只支持 type=0 的标准 JSON API，因此不会错误地向此地址追加 ?ac=list。\n\n下一步需要为该类型接入对应解析器；Spider 站点还需兼容其运行接口。"
             showStatus("暂不支持此站点类型：${site.type}")
             return
         }
@@ -507,6 +516,8 @@ class MainActivity : Activity() {
         val name: String,
         val api: String,
         val type: Int,
+        val jar: String,
+        val ext: String,
         val searchable: Boolean,
         val quickSearch: Boolean
     )
