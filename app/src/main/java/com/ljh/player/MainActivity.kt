@@ -14,6 +14,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
+import java.util.zip.ZipFile
 import java.nio.charset.Charset
 import java.util.concurrent.Executors
 
@@ -25,6 +27,7 @@ class MainActivity : Activity() {
     private lateinit var output: TextView
     private lateinit var itemList: LinearLayout
     private val defaultSource = "http://fty.xxooo.cf/tv"
+    private var currentSpiderUrl: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -74,6 +77,7 @@ class MainActivity : Activity() {
         })
         buttons.addView(actionButton("检测接口") { probeSource() })
         buttons.addView(actionButton("加载点播站点") { loadConfig() })
+        buttons.addView(actionButton("下载/检查 Spider") { downloadSpiderJar() })
         root.addView(buttons)
         status = TextView(this).apply {
             text = "默认源已填写。点击“加载点播站点”读取配置。"
@@ -239,6 +243,7 @@ class MainActivity : Activity() {
                     output.text = "读取失败：${result.error}\n\n请确认这个地址直接返回 TVBox JSON，而不是导航网页。"
                     showStatus("配置读取失败")
                 } else {
+                    currentSpiderUrl = result.spiderUrl
                     output.text = "HTTP：${result.httpCode}\n顶层字段：${result.fields.joinToString()}\n识别到点播站点：${result.sites.size}\n\n附加配置：\n${result.configSummary}" + if (result.spiderUrl.isNotBlank()) "\n\nSpider 解析地址：\n${result.spiderUrl}\n\n注意：当前版本尚未执行 Spider JAR；这里只解析出地址，下一步需要检查 JAR 的兼容接口和依赖。" else "\n\n未配置 spider 地址。" + "\n\n选择站点可查看其 API 信息。"
                     result.sites.forEach { site ->
                         itemList.addView(actionButton("${site.name}  ·  type=${site.type}  ·  ${if (site.searchable) "支持搜索" else "搜索未标记"}") {
@@ -251,6 +256,92 @@ class MainActivity : Activity() {
         }
     }
 
+
+    private fun downloadSpiderJar() {
+        val spiderUrl = currentSpiderUrl
+        if (spiderUrl.isBlank()) {
+            showStatus("请先加载配置，并确认配置包含 spider 地址")
+            output.text = "尚未取得 Spider 下载地址。先点击“加载点播站点”，检查配置摘要中的 spider 字段。"
+            return
+        }
+        if (!spiderUrl.startsWith("http://", true) && !spiderUrl.startsWith("https://", true)) {
+            showStatus("Spider 地址不是 HTTP(S) URL")
+            output.text = "无法下载 Spider：$spiderUrl"
+            return
+        }
+        showStatus("正在下载 Spider JAR…")
+        output.text = "Spider 地址：$spiderUrl\n正在下载并检查文件结构…"
+        executor.execute {
+            val result = runCatching {
+                val directory = java.io.File(filesDir, "spider").apply { mkdirs() }
+                val target = java.io.File(directory, "spider.jar")
+                val temp = java.io.File(directory, "spider.jar.tmp")
+                val connection = openConnection(spiderUrl)
+                try {
+                    val code = connection.responseCode
+                    if (code !in 200..299) error("HTTP $code")
+                    val declared = connection.contentLengthLong
+                    if (declared > 80L * 1024 * 1024) error("文件过大：$declared bytes（上限 80 MiB）")
+                    connection.inputStream.use { input ->
+                        temp.outputStream().buffered().use { output ->
+                            val buffer = ByteArray(8192)
+                            var total = 0L
+                            while (true) {
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                total += count
+                                if (total > 80L * 1024 * 1024) error("下载文件超过 80 MiB 上限")
+                                output.write(buffer, 0, count)
+                            }
+                        }
+                    }
+                } finally {
+                    connection.disconnect()
+                }
+                if (temp.length() < 4) error("下载内容过短，不像有效 JAR")
+                val digest = MessageDigest.getInstance("SHA-256")
+                val hash = temp.inputStream().use { input ->
+                    val buffer = ByteArray(8192)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        digest.update(buffer, 0, count)
+                    }
+                    digest.digest().joinToString("") { "%02x".format(it) }
+                }
+                val entries = ZipFile(temp).use { zip ->
+                    zip.entries().asSequence().map { it.name }.toList()
+                }
+                if (entries.isEmpty()) error("ZIP/JAR 中没有条目，文件可能不是有效 JAR")
+                if (!temp.renameTo(target)) {
+                    temp.copyTo(target, overwrite = true)
+                    temp.delete()
+                }
+                val dex = entries.filter { it.matches(Regex("classes(\\d*)\\.dex")) }
+                val classes = entries.count { it.endsWith(".class", true) }
+                val nativeLibs = entries.filter { it.startsWith("lib/") && it.endsWith(".so") }
+                buildString {
+                    appendLine("Spider JAR 下载成功")
+                    appendLine("来源：$spiderUrl")
+                    appendLine("本地文件：${target.absolutePath}")
+                    appendLine("大小：${target.length()} bytes")
+                    appendLine("SHA-256：$hash")
+                    appendLine("JAR 条目数：${entries.size}")
+                    appendLine("DEX 文件：${if (dex.isEmpty()) "未发现" else dex.joinToString()}")
+                    appendLine("普通 class 文件数：$classes")
+                    appendLine("原生 so 文件数：${nativeLibs.size}")
+                    appendLine()
+                    appendLine("说明：下载与 ZIP 结构检查已完成，但这不代表 Spider 可执行。下一步仍需核对该 JAR 的 Spider 基类 ABI、依赖库和初始化方式。")
+                    if (dex.isEmpty() && classes == 0) appendLine("警告：未发现 classes.dex 或 .class，文件可能不是可执行 Spider JAR。")
+                    if (nativeLibs.isNotEmpty()) appendLine("注意：JAR 含原生库，运行时还需验证设备 ABI 与加载路径。")
+                }
+            }.getOrElse { "Spider 下载/检查失败：${it.javaClass.simpleName}: ${it.message ?: "未知错误"}" }
+            runOnUiThread {
+                output.text = result
+                showStatus(if (result.startsWith("Spider JAR 下载成功")) "Spider 已缓存；尚未执行" else "Spider 下载或检查失败")
+            }
+        }
+    }
 
     private fun inspectSiteApi(site: SiteInfo) {
         if (site.api.isBlank()) {
