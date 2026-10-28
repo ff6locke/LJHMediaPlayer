@@ -472,8 +472,7 @@ class MainActivity : Activity() {
                 }
                 parsed.movies.forEach { movie ->
                     itemList.addView(actionButton("${movie.name}${if (movie.remarks.isNotBlank()) " · ${movie.remarks}" else ""}") {
-                        output.text = "影片：${movie.name}\n分类：${category?.name ?: "全部"}\n年份：${movie.year}\n备注：${movie.remarks}\n影片 ID：${movie.id}\n图片：${movie.pic}\n\n下一步将接入详情、播放线路和视频播放器。"
-                        showStatus("已选择影片：${movie.name}")
+                        loadVodDetail(site, base, movie)
                     })
                 }
                 if (parsed.movies.isEmpty() && parsed.categories.isEmpty()) {
@@ -510,11 +509,60 @@ class MainActivity : Activity() {
                 val movies = result.getOrNull()
                 if (movies == null) { output.text = "搜索失败：${result.exceptionOrNull()?.message ?: "未知错误"}"; showStatus("搜索失败"); return@runOnUiThread }
                 output.text = "站点：${site.name}\n关键词：$keyword\n结果：${movies.size} 部"
-                movies.forEach { movie -> itemList.addView(actionButton(movie.name) { output.text = "影片：${movie.name}\nID：${movie.id}\n年份：${movie.year}\n备注：${movie.remarks}\n详情和播放功能尚未接入。" }) }
+                movies.forEach { movie -> itemList.addView(actionButton(movie.name) { loadVodDetail(site, base, movie) }) }
                 showStatus("搜索完成：${movies.size} 部影片")
             }
         }
     }
+    private fun loadVodDetail(site: SiteInfo, base: String, movie: VodMovie) {
+        val requestUrl = appendApiParams(base, linkedMapOf("ac" to "detail", "ids" to movie.id))
+        showStatus("正在加载影片详情…")
+        output.text = "影片：${movie.name}\n正在读取播放线路…"
+        itemList.removeAllViews()
+        executor.execute {
+            val result = runCatching {
+                val connection = openConnection(requestUrl)
+                try {
+                    val code = connection.responseCode
+                    val body = (if (code in 200..399) connection.inputStream else connection.errorStream)?.use { it.readBytes().take(1024 * 1024).toByteArray().toString(Charsets.UTF_8) } ?: ""
+                    if (code !in 200..399) error("HTTP $code")
+                    val json = runCatching { JSONObject(body.trim()) }.getOrNull() ?: error("详情接口未返回 JSON 对象")
+                    val data = json.optJSONObject("data") ?: json
+                    val list = data.optJSONArray("list") ?: json.optJSONArray("list")
+                    val detail = list?.optJSONObject(0) ?: data.optJSONObject("vod") ?: json.optJSONObject("vod") ?: error("详情响应中没有影片对象")
+                    val playFrom = detail.opt("vod_play_from").safeString("")
+                    val playUrl = detail.opt("vod_play_url").safeString("")
+                    val sources = playFrom.split("$" + "$" + "$").map { it.trim() }
+                    val groups = playUrl.split("$" + "$" + "$")
+                    val episodes = mutableListOf<Pair<String, String>>()
+                    groups.forEachIndexed { index, group ->
+                        val sourceName = sources.getOrNull(index)?.ifBlank { "线路 ${index + 1}" } ?: "线路 ${index + 1}"
+                        group.split("#").forEach { entry ->
+                            val splitAt = entry.indexOf("$")
+                            if (splitAt > 0 && splitAt < entry.length - 1) episodes.add(Pair("$sourceName · ${entry.substring(0, splitAt).trim()}", entry.substring(splitAt + 1).trim()))
+                        }
+                    }
+                    Triple(detail.opt("vod_name").safeString(movie.name), detail.opt("vod_content").safeString(""), episodes)
+                } finally { connection.disconnect() }
+            }
+            runOnUiThread {
+                val detail = result.getOrNull()
+                if (detail == null) { output.text = "影片：${movie.name}\n详情加载失败：${result.exceptionOrNull()?.message ?: "未知错误"}"; showStatus("详情加载失败"); return@runOnUiThread }
+                output.text = "影片：${detail.first}\n简介：${detail.second.take(500)}\n可播放集数：${detail.third.size}"
+                detail.third.forEach { episode ->
+                    itemList.addView(actionButton(episode.first) {
+                        val intent = android.content.Intent(this, PlayerActivity::class.java)
+                        intent.putExtra("title", "${detail.first} · ${episode.first}")
+                        intent.putExtra("url", episode.second)
+                        startActivity(intent)
+                    })
+                }
+                if (detail.third.isEmpty()) output.text = output.text.toString() + "\n未解析到标准 CMS 播放线路。"
+                showStatus(if (detail.third.isEmpty()) "没有可识别的播放线路" else "已加载 ${detail.third.size} 个播放项")
+            }
+        }
+    }
+
     private fun resolveReference(baseUrl: String, reference: String): String {
         val value = reference.trim()
         if (value.isBlank()) return ""
