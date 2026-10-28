@@ -231,8 +231,7 @@ class MainActivity : Activity() {
                         jar = site.opt("jar").safeString(""),
                         ext = when (val extValue = site.opt("ext")) {
                             null, JSONObject.NULL -> ""
-                            is JSONObject -> "JSON 对象（${extValue.length()} 个字段）"
-                            is JSONArray -> "数组（${extValue.length()} 项）"
+                            is JSONObject, is JSONArray -> extValue.toString()
                             else -> extValue.toString().take(300)
                         },
                         searchable = site.opt("searchable").safeInt(0) == 1,
@@ -373,13 +372,14 @@ class MainActivity : Activity() {
         // Explain the missing runtime instead of attempting an HTTP request to that fake host.
         if (rawApi.startsWith("csp_", ignoreCase = true)) {
             val siteJarUrl = if (site.jar.isNotBlank()) resolveReference(currentSource(), site.jar) else currentSpiderUrl
-            output.text = "站点：${site.name}\n站点类型：${site.type}\nSpider 类名：$rawApi\n站点 jar：${site.jar.ifBlank { "(未单独指定，使用顶层 spider)" }}\n解析后的 JAR 地址：${siteJarUrl.ifBlank { "(未配置)" }}\n扩展 ext：${site.ext.ifBlank { "(未提供)" }}\n\n诊断：这是 TVBox Spider 类名，不是网址；不能把它作为 HTTP 主机名请求。\n\n当前版本尚未执行 Spider JAR。可以先下载并检查这个站点实际使用的 JAR，再核对其运行接口与依赖。"
+            output.text = "站点：${site.name}\n站点类型：${site.type}\nSpider 类名：$rawApi\n站点 jar：${site.jar.ifBlank { "(未单独指定，使用顶层 spider)" }}\n解析后的 JAR 地址：${siteJarUrl.ifBlank { "(未配置)" }}\n扩展 ext：${site.ext.ifBlank { "(未提供)" }}\n\nSpider 插件是第三方代码，只运行你信任的配置和 JAR。" 
             itemList.removeAllViews()
             if (siteJarUrl.isNotBlank()) {
+                itemList.addView(actionButton("运行此 Spider 站点") { runSpiderSite(site, siteJarUrl, rawApi.removePrefix("csp_")) })
                 val safeName = site.name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40).ifBlank { "site" } + ".jar"
-                itemList.addView(actionButton("下载/检查此站点 JAR") { downloadSpiderJar(siteJarUrl, safeName, rawApi.removePrefix("csp_")) })
+                itemList.addView(actionButton("仅下载/检查 JAR") { downloadSpiderJar(siteJarUrl, safeName, rawApi.removePrefix("csp_")) })
             }
-            showStatus("Spider 引擎未接入：$rawApi")
+            showStatus("可尝试运行 Spider：$rawApi")
             return
         }
 
@@ -560,6 +560,132 @@ class MainActivity : Activity() {
                 if (detail.third.isEmpty()) output.text = output.text.toString() + "\n未解析到标准 CMS 播放线路。"
                 showStatus(if (detail.third.isEmpty()) "没有可识别的播放线路" else "已加载 ${detail.third.size} 个播放项")
             }
+        }
+    }
+
+    private fun runSpiderSite(site: SiteInfo, jarUrl: String, classShortName: String) {
+        showStatus("正在准备 Spider 插件…")
+        output.text = "站点：${site.name}\n正在下载并初始化插件。仅运行你信任的第三方 JAR。"
+        itemList.removeAllViews()
+        executor.execute {
+            val result = runCatching {
+                val dir = java.io.File(filesDir, "spider").apply { mkdirs() }
+                val safeName = site.name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40).ifBlank { "site" }
+                val jarFile = java.io.File(dir, "$safeName.jar")
+                if (!jarFile.isFile || jarFile.length() < 4) {
+                    val connection = openConnection(jarUrl)
+                    try {
+                        val code = connection.responseCode
+                        if (code !in 200..299) error("JAR 下载 HTTP $code")
+                        if (connection.contentLengthLong > 80L * 1024 * 1024) error("JAR 超过 80 MiB 限制")
+                        val tmp = java.io.File(dir, "$safeName.jar.tmp")
+                        connection.inputStream.use { input -> tmp.outputStream().buffered().use { out ->
+                            val buffer = ByteArray(8192)
+                            var total = 0L
+                            while (true) { val n = input.read(buffer); if (n < 0) break; total += n; if (total > 80L * 1024 * 1024) error("JAR 超过 80 MiB 限制"); out.write(buffer, 0, n) }
+                        } }
+                        java.util.zip.ZipFile(tmp).use { zip -> if (!zip.entries().hasMoreElements()) error("下载内容不是有效 JAR/ZIP") }
+                        if (!tmp.renameTo(jarFile)) { tmp.copyTo(jarFile, overwrite = true); tmp.delete() }
+                    } finally { connection.disconnect() }
+                }
+                val optimized = java.io.File(dir, "optimized").apply { mkdirs() }
+                val libs = java.io.File(dir, "libs").apply { mkdirs() }
+                val loader = dalvik.system.DexClassLoader(jarFile.absolutePath, optimized.absolutePath, libs.absolutePath, javaClass.classLoader)
+                val candidates = listOf("com.github.catvod.spider.$classShortName", "com.github.catvod.spider." + classShortName, classShortName)
+                var loadedClass: Class<*>? = null
+                var lastError: Throwable? = null
+                for (candidate in candidates) { try { loadedClass = loader.loadClass(candidate); break } catch (t: Throwable) { lastError = t } }
+                val spiderClass = loadedClass ?: throw IllegalStateException("JAR 中找不到类 ${candidates.joinToString()}：${lastError?.message ?: ""}")
+                val spider = spiderClass.getDeclaredConstructor().newInstance()
+                val init2 = spiderClass.methods.firstOrNull { it.name == "init" && it.parameterTypes.size == 2 }
+                if (init2 != null) init2.invoke(spider, this@MainActivity, site.ext)
+                else spiderClass.methods.firstOrNull { it.name == "init" && it.parameterTypes.size == 1 }?.invoke(spider, this@MainActivity)
+                val home = spiderClass.methods.firstOrNull { it.name == "homeContent" && it.parameterTypes.size == 1 } ?: error("缺少 homeContent(boolean)，不是兼容的 CatVod Spider")
+                val json = JSONObject(home.invoke(spider, true)?.toString().orEmpty())
+                Triple(spider, json, spiderClass.name)
+            }
+            runOnUiThread {
+                val loaded = result.getOrNull()
+                if (loaded == null) { output.text = "Spider 启动失败：${result.exceptionOrNull()?.cause?.message ?: result.exceptionOrNull()?.message ?: "未知错误"}\n\n可能是类名、基类 ABI、依赖或初始化方式不兼容。"; showStatus("Spider 启动失败"); return@runOnUiThread }
+                val spider = loaded.first
+                val json = loaded.second
+                output.text = "Spider：${loaded.third}\n分类：${json.optJSONArray("class")?.length() ?: 0}\n影片：${json.optJSONArray("list")?.length() ?: 0}"
+                itemList.removeAllViews()
+                val categories = json.optJSONArray("class") ?: JSONArray()
+                for (i in 0 until categories.length()) {
+                    val cat = categories.optJSONObject(i) ?: continue
+                    val id = cat.opt("type_id").safeString("")
+                    val name = cat.opt("type_name").safeString(id)
+                    if (id.isNotBlank()) itemList.addView(actionButton("分类：$name") { loadSpiderCategory(spider, site, id) })
+                }
+                addSpiderVideoButtons(spider, site, json.optJSONArray("list") ?: JSONArray())
+                showStatus("Spider 已初始化")
+            }
+        }
+    }
+
+    private fun loadSpiderCategory(spider: Any, site: SiteInfo, categoryId: String) {
+        showStatus("正在加载 Spider 分类…")
+        executor.execute {
+            val result = runCatching {
+                val method = spider.javaClass.methods.firstOrNull { it.name == "categoryContent" && it.parameterTypes.size == 4 } ?: error("缺少 categoryContent 方法")
+                val extend = runCatching { JSONObject(site.ext).let { obj -> HashMap<String, String>().apply { obj.keys().forEach { key -> put(key, obj.opt(key).safeString("")) } } } }.getOrElse { HashMap() }
+                JSONObject(method.invoke(spider, categoryId, "1", true, extend)?.toString().orEmpty())
+            }
+            runOnUiThread {
+                val json = result.getOrNull()
+                if (json == null) { output.text = "分类加载失败：${result.exceptionOrNull()?.cause?.message ?: result.exceptionOrNull()?.message}"; showStatus("分类加载失败"); return@runOnUiThread }
+                output.text = "分类：$categoryId\n影片：${json.optJSONArray("list")?.length() ?: 0}"
+                itemList.removeAllViews()
+                addSpiderVideoButtons(spider, site, json.optJSONArray("list") ?: JSONArray())
+            }
+        }
+    }
+
+    private fun addSpiderVideoButtons(spider: Any, site: SiteInfo, videos: JSONArray) {
+        for (i in 0 until videos.length()) {
+            val video = videos.optJSONObject(i) ?: continue
+            val id = video.opt("vod_id").safeString("")
+            val name = video.opt("vod_name").safeString("未命名影片")
+            if (id.isBlank()) continue
+            itemList.addView(actionButton(name) {
+                showStatus("正在加载影片详情…")
+                executor.execute {
+                    val result = runCatching {
+                        val method = spider.javaClass.methods.firstOrNull { it.name == "detailContent" && it.parameterTypes.size == 1 } ?: error("缺少 detailContent 方法")
+                        val detailJson = JSONObject(method.invoke(spider, listOf(id))?.toString().orEmpty())
+                        val detail = detailJson.optJSONArray("list")?.optJSONObject(0) ?: detailJson.optJSONObject("vod") ?: error("详情中没有影片")
+                        val flags = detail.opt("vod_play_from").safeString("").split("$" + "$" + "$")
+                        val groups = detail.opt("vod_play_url").safeString("").split("$" + "$" + "$")
+                        val episodes = mutableListOf<Triple<String, String, String>>()
+                        groups.forEachIndexed { index, group -> group.split("#").forEach { entry -> val pos = entry.indexOf("$"); if (pos > 0 && pos < entry.length - 1) episodes.add(Triple(flags.getOrNull(index) ?: "线路 ${index + 1}", entry.substring(0, pos).trim(), entry.substring(pos + 1).trim())) } }
+                        Triple(detail.opt("vod_name").safeString(name), detail.opt("vod_content").safeString(""), episodes)
+                    }
+                    runOnUiThread {
+                        val detail = result.getOrNull()
+                        if (detail == null) { output.text = "详情失败：${result.exceptionOrNull()?.cause?.message ?: result.exceptionOrNull()?.message}"; showStatus("详情加载失败"); return@runOnUiThread }
+                        output.text = "影片：${detail.first}\n简介：${detail.second.take(400)}\n剧集：${detail.third.size}"
+                        itemList.removeAllViews()
+                        detail.third.forEach { ep -> itemList.addView(actionButton("${ep.first} · ${ep.second}") {
+                            executor.execute {
+                                val playResult = runCatching {
+                                    val method = spider.javaClass.methods.firstOrNull { it.name == "playerContent" && it.parameterTypes.size == 3 } ?: error("缺少 playerContent 方法")
+                                    val playJson = JSONObject(method.invoke(spider, ep.first, ep.third, emptyList<String>())?.toString().orEmpty())
+                                    val url = playJson.opt("url").safeString(ep.third)
+                                    if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) error("无效播放地址：$url")
+                                    url
+                                }
+                                runOnUiThread {
+                                    val url = playResult.getOrNull()
+                                    if (url == null) { output.text = "解析播放地址失败：${playResult.exceptionOrNull()?.cause?.message ?: playResult.exceptionOrNull()?.message}"; showStatus("播放解析失败") }
+                                    else { startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java).putExtra("title", "${detail.first} · ${ep.second}").putExtra("url", url)); showStatus("正在播放") }
+                                }
+                            }
+                        }) }
+                        showStatus("已解析剧集")
+                    }
+                }
+            })
         }
     }
 
