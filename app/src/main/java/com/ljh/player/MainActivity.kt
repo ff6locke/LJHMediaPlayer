@@ -264,8 +264,8 @@ class MainActivity : Activity() {
     }
 
 
-    private fun downloadSpiderJar() {
-        val spiderUrl = currentSpiderUrl
+    private fun downloadSpiderJar(urlOverride: String? = null, fileName: String = "spider.jar") {
+        val spiderUrl = urlOverride?.takeIf { it.isNotBlank() } ?: currentSpiderUrl
         if (spiderUrl.isBlank()) {
             showStatus("请先加载配置，并确认配置包含 spider 地址")
             output.text = "尚未取得 Spider 下载地址。先点击“加载点播站点”，检查配置摘要中的 spider 字段。"
@@ -281,8 +281,9 @@ class MainActivity : Activity() {
         executor.execute {
             val result = runCatching {
                 val directory = java.io.File(filesDir, "spider").apply { mkdirs() }
-                val target = java.io.File(directory, "spider.jar")
-                val temp = java.io.File(directory, "spider.jar.tmp")
+                val safeName = fileName.replace(Regex("[^A-Za-z0-9._-]"), "_").take(60).ifBlank { "spider.jar" }
+                val target = java.io.File(directory, safeName)
+                val temp = java.io.File(directory, safeName + ".tmp")
                 val connection = openConnection(spiderUrl)
                 try {
                     val code = connection.responseCode
@@ -330,6 +331,7 @@ class MainActivity : Activity() {
                 buildString {
                     appendLine("Spider JAR 下载成功")
                     appendLine("来源：$spiderUrl")
+                    appendLine("缓存文件名：$safeName")
                     appendLine("本地文件：${target.absolutePath}")
                     appendLine("大小：${target.length()} bytes")
                     appendLine("SHA-256：$hash")
@@ -363,7 +365,12 @@ class MainActivity : Activity() {
         // Explain the missing runtime instead of attempting an HTTP request to that fake host.
         if (rawApi.startsWith("csp_", ignoreCase = true)) {
             val siteJarUrl = if (site.jar.isNotBlank()) resolveReference(currentSource(), site.jar) else currentSpiderUrl
-            output.text = "站点：${site.name}\n站点类型：${site.type}\nSpider 类名：$rawApi\n站点 jar：${site.jar.ifBlank { "(未单独指定，使用顶层 spider)" }}\n解析后的 JAR 地址：${siteJarUrl.ifBlank { "(未配置)" }}\n扩展 ext：${site.ext.ifBlank { "(未提供)" }}\n\n诊断：这是 TVBox Spider 类名，不是网址；不能把它作为 HTTP 主机名请求。\n\n当前版本尚未执行 Spider JAR，因此该站点暂不可用。若站点单独提供 jar，优先使用该站点 jar；否则使用顶层 spider。下载按钮当前只检查顶层 Spider，站点独立 JAR 尚未分别下载。\n\n注意：仅下载 JAR 仍不够，还需要确认它的 CatVod/TVBox 接口、依赖和调用方法，之后才能接入执行。"
+            output.text = "站点：${site.name}\n站点类型：${site.type}\nSpider 类名：$rawApi\n站点 jar：${site.jar.ifBlank { "(未单独指定，使用顶层 spider)" }}\n解析后的 JAR 地址：${siteJarUrl.ifBlank { "(未配置)" }}\n扩展 ext：${site.ext.ifBlank { "(未提供)" }}\n\n诊断：这是 TVBox Spider 类名，不是网址；不能把它作为 HTTP 主机名请求。\n\n当前版本尚未执行 Spider JAR。可以先下载并检查这个站点实际使用的 JAR，再核对其运行接口与依赖。"
+            itemList.removeAllViews()
+            if (siteJarUrl.isNotBlank()) {
+                val safeName = site.name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40).ifBlank { "site" } + ".jar"
+                itemList.addView(actionButton("下载/检查此站点 JAR") { downloadSpiderJar(siteJarUrl, safeName) })
+            }
             showStatus("Spider 引擎未接入：$rawApi")
             return
         }
