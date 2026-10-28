@@ -264,7 +264,7 @@ class MainActivity : Activity() {
     }
 
 
-    private fun downloadSpiderJar(urlOverride: String? = null, fileName: String = "spider.jar") {
+    private fun downloadSpiderJar(urlOverride: String? = null, fileName: String = "spider.jar", expectedClass: String? = null) {
         val spiderUrl = urlOverride?.takeIf { it.isNotBlank() } ?: currentSpiderUrl
         if (spiderUrl.isBlank()) {
             showStatus("请先加载配置，并确认配置包含 spider 地址")
@@ -338,6 +338,14 @@ class MainActivity : Activity() {
                     appendLine("JAR 条目数：${entries.size}")
                     appendLine("DEX 文件：${if (dex.isEmpty()) "未发现" else dex.joinToString()}")
                     appendLine("普通 class 文件数：$classes")
+                    if (!expectedClass.isNullOrBlank()) {
+                        val classEntry = expectedClass.replace('.', '/') + ".class"
+                        val dexOnly = dex.isNotEmpty() && classes == 0
+                        val classPresent = entries.any { it == classEntry }
+                        appendLine("目标 Spider 类：$expectedClass")
+                        appendLine("JAR 中找到目标 .class：${if (classPresent) "是" else if (dexOnly) "无法从 DEX 条目直接确认" else "否"}")
+                        if (!classPresent && !dexOnly) appendLine("提示：目标类不在 JAR 的普通 class 条目中，可能类名不匹配或 JAR 使用了不同打包方式。")
+                    }
                     appendLine("原生 so 文件数：${nativeLibs.size}")
                     appendLine()
                     appendLine("说明：下载与 ZIP 结构检查已完成，但这不代表 Spider 可执行。下一步仍需核对该 JAR 的 Spider 基类 ABI、依赖库和初始化方式。")
@@ -369,7 +377,7 @@ class MainActivity : Activity() {
             itemList.removeAllViews()
             if (siteJarUrl.isNotBlank()) {
                 val safeName = site.name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40).ifBlank { "site" } + ".jar"
-                itemList.addView(actionButton("下载/检查此站点 JAR") { downloadSpiderJar(siteJarUrl, safeName) })
+                itemList.addView(actionButton("下载/检查此站点 JAR") { downloadSpiderJar(siteJarUrl, safeName, rawApi.removePrefix("csp_")) })
             }
             showStatus("Spider 引擎未接入：$rawApi")
             return
