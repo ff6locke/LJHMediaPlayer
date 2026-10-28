@@ -8,6 +8,9 @@ import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.DefaultMediaSourceFactory
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.ui.PlayerView
 
 class PlayerActivity : Activity() {
@@ -34,7 +37,21 @@ class PlayerActivity : Activity() {
             message.text = "播放地址无效或不是 HTTP(S) 地址：\n$url"
             return
         }
-        val exo = ExoPlayer.Builder(this).build()
+        val headers = runCatching {
+            val raw = intent.getStringExtra("headers").orEmpty()
+            val json = org.json.JSONObject(raw)
+            val map = mutableMapOf<String, String>()
+            val keys = json.keys()
+            while (keys.hasNext()) { val key = keys.next(); map[key] = json.opt(key).toString() }
+            map.toMap()
+        }.getOrDefault(emptyMap())
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent("Mozilla/5.0 (Linux; Android TV) AppleWebKit/537.36 LJHPlayer")
+            .setAllowCrossProtocolRedirects(true)
+            .setDefaultRequestProperties(headers)
+        val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
+        val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+        val exo = ExoPlayer.Builder(this).setMediaSourceFactory(mediaSourceFactory).build()
         player = exo
         playerView.player = exo
         exo.addListener(object : Player.Listener {
