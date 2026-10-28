@@ -461,7 +461,10 @@ class MainActivity : Activity() {
                     showStatus("影片加载失败")
                     return@runOnUiThread
                 }
-                output.text = "站点：${site.name}\n分类：${parsed.categories.size} 个\n影片：${parsed.movies.size} 部\n选择分类筛选影片，选择影片可查看基本信息。"
+                output.text = "站点：${site.name}\n分类：${parsed.categories.size} 个\n影片：${parsed.movies.size} 部\n可输入关键词搜索，或选择分类筛选影片。"
+                val keywordInput = EditText(this).apply { hint = "搜索影片关键词"; isSingleLine = true; textSize = 16f; setTextColor(0xFFFFFFFF.toInt()); setHintTextColor(0xFF8B96A9.toInt()) }
+                itemList.addView(keywordInput)
+                itemList.addView(actionButton("搜索") { val keyword = keywordInput.text.toString().trim(); if (keyword.isBlank()) showStatus("请输入搜索关键词") else loadVodSearch(site, base, keyword) })
                 parsed.categories.forEach { cat ->
                     itemList.addView(actionButton("分类：${cat.name}") {
                         loadVodPage(site, base, cat, 1)
@@ -481,6 +484,37 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun loadVodSearch(site: SiteInfo, base: String, keyword: String) {
+        val requestUrl = appendApiParams(base, linkedMapOf("ac" to "videolist", "wd" to keyword, "pg" to "1"))
+        showStatus("正在搜索：$keyword")
+        output.text = "站点：${site.name} 搜索：$keyword 请求：$requestUrl"
+        itemList.removeAllViews()
+        executor.execute {
+            val result = runCatching {
+                val connection = openConnection(requestUrl)
+                try {
+                    val code = connection.responseCode
+                    val body = (if (code in 200..399) connection.inputStream else connection.errorStream)?.use { it.readBytes().take(1024 * 1024).toByteArray().toString(Charsets.UTF_8) } ?: ""
+                    if (code !in 200..399) error("HTTP $code")
+                    val json = runCatching { JSONObject(body.trim()) }.getOrNull() ?: error("搜索接口未返回 JSON 对象")
+                    val data = json.optJSONObject("data") ?: json
+                    val list = data.optJSONArray("list") ?: json.optJSONArray("list") ?: JSONArray()
+                    (0 until list.length()).mapNotNull { i ->
+                        val item = list.optJSONObject(i) ?: return@mapNotNull null
+                        val id = item.opt("vod_id").safeString("")
+                        if (id.isBlank()) null else VodMovie(id, item.opt("vod_name").safeString("未命名影片"), item.opt("vod_remarks").safeString(""), item.opt("vod_year").safeString(""), item.opt("vod_pic").safeString(""))
+                    }
+                } finally { connection.disconnect() }
+            }
+            runOnUiThread {
+                val movies = result.getOrNull()
+                if (movies == null) { output.text = "搜索失败：${result.exceptionOrNull()?.message ?: "未知错误"}"; showStatus("搜索失败"); return@runOnUiThread }
+                output.text = "站点：${site.name}\n关键词：$keyword\n结果：${movies.size} 部"
+                movies.forEach { movie -> itemList.addView(actionButton(movie.name) { output.text = "影片：${movie.name}\nID：${movie.id}\n年份：${movie.year}\n备注：${movie.remarks}\n详情和播放功能尚未接入。" }) }
+                showStatus("搜索完成：${movies.size} 部影片")
+            }
+        }
+    }
     private fun resolveReference(baseUrl: String, reference: String): String {
         val value = reference.trim()
         if (value.isBlank()) return ""
