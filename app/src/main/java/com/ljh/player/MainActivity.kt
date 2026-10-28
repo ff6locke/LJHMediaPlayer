@@ -91,7 +91,7 @@ class MainActivity : Activity() {
             nav.addView(actionButton(label) {
                 when (label) {
                     "接口设置" -> sourceInput.requestFocus()
-                    "搜索" -> showStatus("请先加载配置；跨站搜索将在确认各站点 API 格式后接入。")
+                    "搜索" -> { showStatus("正在加载可搜索站点…"); loadConfig() }
                     "点播" -> loadConfig()
                     "直播" -> showStatus("直播列表解析尚未接入；请先验证配置中的 lives 字段或 M3U 地址。")
                 }
