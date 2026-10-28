@@ -673,12 +673,14 @@ class MainActivity : Activity() {
                                     val playJson = JSONObject(method.invoke(spider, ep.first, ep.third, emptyList<String>())?.toString().orEmpty())
                                     val url = playJson.opt("url").safeString(ep.third)
                                     if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) error("无效播放地址：$url")
-                                    url
+                                    val headers = playJson.optJSONObject("header") ?: playJson.optJSONObject("headers") ?: JSONObject()
+                                    Triple(url, headers.toString(), playJson.opt("parse").safeString(""))
                                 }
                                 runOnUiThread {
-                                    val url = playResult.getOrNull()
-                                    if (url == null) { output.text = "解析播放地址失败：${playResult.exceptionOrNull()?.cause?.message ?: playResult.exceptionOrNull()?.message}"; showStatus("播放解析失败") }
-                                    else { startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java).putExtra("title", "${detail.first} · ${ep.second}").putExtra("url", url)); showStatus("正在播放") }
+                                    val playback = playResult.getOrNull()
+                                    if (playback == null) { output.text = "解析播放地址失败：${playResult.exceptionOrNull()?.cause?.message ?: playResult.exceptionOrNull()?.message}"; showStatus("播放解析失败") }
+                                    else if (playback.third.isNotBlank() && playback.third != "0") { output.text = "该 Spider 返回了需要额外解析器的播放标记：${playback.third}\n当前播放器仅支持 Spider 已返回的直链或可直接播放的媒体地址。"; showStatus("需要外部解析器") }
+                                    else { startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java).putExtra("title", "${detail.first} · ${ep.second}").putExtra("url", playback.first).putExtra("headers", playback.second)); showStatus("正在播放") }
                                 }
                             }
                         }) }
