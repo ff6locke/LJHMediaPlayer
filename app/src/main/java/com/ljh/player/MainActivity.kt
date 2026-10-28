@@ -26,7 +26,7 @@ class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var output: TextView
     private lateinit var itemList: LinearLayout
-    private val defaultSource = "http://fty.xxooo.cf/tv"
+    private val defaultSource = "https://raw.giteeusercontent.com/gaoops404/tvbox-config/raw/main/tvbox.json"
     private var currentSpiderUrl: String = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -60,7 +60,7 @@ class MainActivity : Activity() {
             isSingleLine = true
             textSize = 16f
             hint = "输入 TVBox 配置 URL"
-            setText(prefs.getString("source", null).let { saved -> if (saved.isNullOrBlank() || saved == "http://www.饭太硬.cc/tv") defaultSource else saved })
+            setText(prefs.getString("source", null).let { saved -> if (saved.isNullOrBlank() || saved == "http://www.饭太硬.cc/tv" || saved == "http://fty.xxooo.cf/tv") defaultSource else saved })
             setTextColor(0xFFFFFFFF.toInt())
             setHintTextColor(0xFF8B96A9.toInt())
             setSelectAllOnFocus(true)
