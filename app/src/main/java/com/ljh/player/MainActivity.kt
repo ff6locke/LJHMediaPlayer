@@ -932,7 +932,7 @@ class MainActivity : Activity() {
                 }
                 val spiderClass = loadedClass ?: run {
                     val discovered = runCatching {
-                        java.util.zip.ZipFile(jarFile).use { zip ->
+                        java.util.zip.ZipFile(jarFiles.first()).use { zip ->
                             val e = zip.entries()
                             val names = mutableListOf<String>()
                             while (e.hasMoreElements()) {
