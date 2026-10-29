@@ -23,6 +23,7 @@ class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("ljhplayer", MODE_PRIVATE) }
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var sourceInput: EditText
+    private lateinit var mediaUrlInput: EditText
     private lateinit var status: TextView
     private lateinit var output: TextView
     private lateinit var itemList: LinearLayout
@@ -79,6 +80,35 @@ class MainActivity : Activity() {
         buttons.addView(actionButton("加载点播站点") { loadConfig() })
         buttons.addView(actionButton("下载/检查 Spider") { downloadSpiderJar() })
         root.addView(buttons)
+
+        root.addView(TextView(this).apply {
+            text = "直接播放媒体地址（MP4 / M3U8 / MPD）"
+            textSize = 17f
+            setTextColor(0xFF66D9C2.toInt())
+            setPadding(0, 14, 0, 4)
+        })
+        mediaUrlInput = EditText(this).apply {
+            isSingleLine = true
+            textSize = 16f
+            hint = "粘贴可直接访问的 http(s) 视频地址"
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFF8B96A9.toInt())
+            setSelectAllOnFocus(true)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+        }
+        root.addView(mediaUrlInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(actionButton("播放此地址") {
+            val mediaUrl = mediaUrlInput.text.toString().trim()
+            if (!mediaUrl.startsWith("http://", true) && !mediaUrl.startsWith("https://", true)) {
+                showStatus("请输入有效的 HTTP(S) 媒体地址")
+            } else {
+                startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java)
+                    .putExtra("title", mediaUrl.substringAfterLast('/').substringBefore('?').ifBlank { "网络视频" })
+                    .putExtra("url", mediaUrl))
+                showStatus("正在打开直播放播放器")
+            }
+        })
+
         status = TextView(this).apply {
             text = "默认源已填写。点击“加载点播站点”读取配置。"
             textSize = 15f
@@ -93,7 +123,7 @@ class MainActivity : Activity() {
                     "接口设置" -> sourceInput.requestFocus()
                     "搜索" -> { showStatus("正在加载可搜索站点…"); loadConfig() }
                     "点播" -> loadConfig()
-                    "直播" -> showStatus("直播列表解析尚未接入；请先验证配置中的 lives 字段或 M3U 地址。")
+                    "直播" -> loadLiveChannels()
                 }
             })
         }
@@ -183,7 +213,7 @@ class MainActivity : Activity() {
                     connection.disconnect()
                 }
                 if (code !in 200..399) error("HTTP 状态码：" + code + "；Content-Type：" + contentType)
-                val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+                    val trimmed = body.trim().removePrefix("\uFEFF")
                 if (trimmed.startsWith("<!DOCTYPE", true) || trimmed.startsWith("<html", true)) {
                     error("服务器返回 HTML 网页，不是 JSON 配置。Content-Type：" + contentType)
                 }
@@ -262,6 +292,185 @@ class MainActivity : Activity() {
         }
     }
 
+
+
+    private fun loadLiveChannels() {
+        val source = currentSource()
+        if (!source.startsWith("http://", true) && !source.startsWith("https://", true)) {
+            showStatus("请先设置有效的 TVBox JSON 地址")
+            return
+        }
+        showStatus("正在读取直播配置…")
+        output.text = "正在读取配置中的 lives 字段和直播源…"
+        itemList.removeAllViews()
+        executor.execute {
+            val result = runCatching {
+                val (code, body) = getText(source)
+                if (code !in 200..399) error("配置请求 HTTP $code")
+                val root = JSONObject(body.trim().removePrefix("\uFEFF"))
+                val lives = root.optJSONArray("lives") ?: JSONArray()
+                if (lives.length() == 0) error("配置中没有 lives 数组；请换用包含直播配置的 TVBox JSON")
+                (0 until lives.length()).mapNotNull { index ->
+                    val item = lives.optJSONObject(index)
+                    when {
+                        item != null -> LiveSource(
+                            name = item.optString("name", "直播源 ${index + 1}"),
+                            url = resolveReference(source, item.optString("url", "")),
+                            inlineChannels = item.optJSONArray("channels")
+                        )
+                        lives.opt(index) is String -> LiveSource(
+                            name = "直播源 ${index + 1}",
+                            url = resolveReference(source, lives.optString(index)),
+                            inlineChannels = null
+                        )
+                        else -> null
+                    }
+                }
+            }
+            runOnUiThread {
+                val sources = result.getOrNull()
+                if (sources == null) {
+                    output.text = "直播配置读取失败：${result.exceptionOrNull()?.message ?: "未知错误"}\n\n支持 TVBox 配置中的 lives 数组和远程 M3U 地址。"
+                    showStatus("未能读取直播源")
+                    return@runOnUiThread
+                }
+                output.text = "找到 ${sources.size} 个直播源。选择一个源加载频道。"
+                sources.forEach { live ->
+                    itemList.addView(actionButton(live.name) { openLiveSource(live) })
+                }
+                showStatus("直播源读取完成")
+            }
+        }
+    }
+
+    private fun openLiveSource(source: LiveSource) {
+        showStatus("正在加载直播源：${source.name}")
+        output.text = "直播源：${source.name}\n${source.url.ifBlank { "内嵌频道" }}"
+        itemList.removeAllViews()
+        executor.execute {
+            val result = runCatching {
+                val channels = mutableListOf<LiveChannel>()
+                val inline = source.inlineChannels
+                if (inline != null) {
+                    for (i in 0 until inline.length()) {
+                        val item = inline.optJSONObject(i) ?: continue
+                        val name = item.optString("name", item.optString("title", "频道 ${i + 1}"))
+                        val urlValue = item.opt("url") ?: item.opt("urls")
+                        val url = when (urlValue) {
+                            is JSONArray -> urlValue.optString(0, "")
+                            else -> urlValue?.toString().orEmpty()
+                        }.substringBefore("|||").trim()
+                        if (url.startsWith("http://", true) || url.startsWith("https://", true)) {
+                            channels.add(LiveChannel(name, url, item.optString("group", item.optString("group-title", "直播"))))
+                        }
+                    }
+                }
+                if (channels.isEmpty() && source.url.isNotBlank()) {
+                    val (code, body) = getText(source.url)
+                    if (code !in 200..399) error("直播源 HTTP $code")
+                    val trimmed = body.trim().removePrefix("\uFEFF")
+                    if (trimmed.startsWith("#EXTM3U", true) || trimmed.contains("#EXTINF", true)) {
+                        var pendingName = ""
+                        var pendingGroup = "直播"
+                        var pendingReferer = ""
+                        var pendingUserAgent = ""
+                        body.lineSequence().forEach { rawLine ->
+                            val line = rawLine.trim()
+                            when {
+                                line.startsWith("#EXTINF", true) -> {
+                                    pendingName = line.substringAfter(',', "").trim().ifBlank { "未命名频道" }
+                                    pendingGroup = Regex("group-title=\"([^\"]*)\"").find(line)?.groupValues?.get(1)?.ifBlank { "直播" } ?: "直播"
+                                }
+                                line.startsWith("#EXTVLCOPT:http-referrer=", true) -> pendingReferer = line.substringAfter('=').trim()
+                                line.startsWith("#EXTVLCOPT:http-user-agent=", true) -> pendingUserAgent = line.substringAfter('=').trim()
+                                line.startsWith("#") || line.isBlank() -> Unit
+                                !line.startsWith("#") -> {
+                                    val resolvedUrl = resolveReference(source.url, line)
+                                    if (resolvedUrl.startsWith("http://", true) || resolvedUrl.startsWith("https://", true)) {
+                                        channels.add(LiveChannel(pendingName.ifBlank { line.substringAfterLast('/').substringBefore('?') }, resolvedUrl, pendingGroup, pendingReferer, pendingUserAgent))
+                                    }
+                                    pendingName = ""
+                                    pendingReferer = ""
+                                    pendingUserAgent = ""
+                                }
+                            }
+                        }
+                    } else {
+                        val jsonObject = runCatching { JSONObject(trimmed) }.getOrNull()
+                        val array = jsonObject?.optJSONArray("channels")
+                            ?: jsonObject?.optJSONArray("data")
+                            ?: jsonObject?.optJSONArray("lives")
+                            ?: runCatching { JSONArray(trimmed) }.getOrNull()
+                            ?: error("直播源不是 M3U，且 JSON 中没有 channels/data/lives 数组")
+                        for (i in 0 until array.length()) {
+                            val item = array.optJSONObject(i) ?: continue
+                            val name = item.optString("name", item.optString("title", item.optString("tvg-name", "频道 ${i + 1}")))
+                            val rawUrl = item.opt("url") ?: item.opt("play") ?: item.opt("urls")
+                            val url = when (rawUrl) {
+                                is JSONArray -> rawUrl.optString(0, "")
+                                else -> rawUrl?.toString().orEmpty()
+                            }.substringBefore("|||").trim()
+                            val resolvedUrl = resolveReference(source.url, url)
+                            if (resolvedUrl.startsWith("http://", true) || resolvedUrl.startsWith("https://", true)) {
+                                channels.add(LiveChannel(
+                                    name,
+                                    resolvedUrl,
+                                    item.optString("group", item.optString("group-title", item.optString("groupTitle", "直播"))),
+                                    item.optString("referer", item.optString("http-referrer", "")),
+                                    item.optString("user-agent", item.optString("userAgent", ""))
+                                ))
+                            }
+                        }
+                    }
+                }
+                if (channels.isEmpty()) error("直播源已读取，但没有找到可播放的 HTTP(S) 频道")
+                channels
+            }
+            runOnUiThread {
+                val channels = result.getOrNull()
+                if (channels == null) {
+                    output.text = "直播源加载失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                    showStatus("直播频道加载失败")
+                    return@runOnUiThread
+                }
+                val groups = channels.groupBy { it.group.ifBlank { "直播" } }
+                val playlistJson = JSONArray()
+                channels.forEach { entry ->
+                    val headers = JSONObject()
+                    if (entry.referer.isNotBlank()) headers.put("Referer", entry.referer)
+                    if (entry.userAgent.isNotBlank()) headers.put("User-Agent", entry.userAgent)
+                    playlistJson.put(JSONObject()
+                        .put("title", entry.name)
+                        .put("url", entry.url)
+                        .put("headers", headers))
+                }
+                val playlistFile = java.io.File(cacheDir, "live-playlist.json")
+                playlistFile.writeText(playlistJson.toString(), Charsets.UTF_8)
+                output.text = "直播源：${source.name}\n频道：${channels.size} 个\n分组：${groups.size} 个"
+                itemList.addView(actionButton("返回直播源列表") { loadLiveChannels() })
+                groups.forEach { (group, entries) ->
+                    itemList.addView(TextView(this).apply {
+                        text = "$group（${entries.size}）"
+                        textSize = 18f
+                        setTextColor(0xFF66D9C2.toInt())
+                        setPadding(4, 12, 4, 4)
+                    })
+                    entries.forEach { channel ->
+                        itemList.addView(actionButton(channel.name) {
+                            startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java)
+                                .putExtra("title", channel.name)
+                                .putExtra("url", channel.url)
+                                .putExtra("headers", playlistJson.optJSONObject(channels.indexOf(channel))?.optJSONObject("headers")?.toString() ?: "{}")
+                                .putExtra("playlist_file", playlistFile.absolutePath)
+                                .putExtra("playlist_index", channels.indexOf(channel))
+                                .putExtra("playlist_label", "频道"))
+                        })
+                    }
+                }
+                showStatus("直播频道已加载")
+            }
+        }
+    }
 
     private fun downloadSpiderJar(urlOverride: String? = null, fileName: String = "spider.jar", expectedClass: String? = null) {
         val spiderUrl = urlOverride?.takeIf { it.isNotBlank() } ?: currentSpiderUrl
@@ -400,12 +609,19 @@ class MainActivity : Activity() {
             rawApi.startsWith("https://", ignoreCase = true) || rawApi.startsWith("http://", ignoreCase = true) -> rawApi
             rawApi.startsWith("//") -> "https:$rawApi"
             rawApi.startsWith("www.", ignoreCase = true) -> "https://$rawApi"
+            rawApi.startsWith("/") || rawApi.startsWith("./") || rawApi.startsWith("../") ||
+                (rawApi.contains("/") && !rawApi.substringBefore('/').contains(".")) -> resolveReference(currentSource(), rawApi)
             rawApi.contains(".") && !rawApi.contains(" ") && !rawApi.startsWith("csp_", ignoreCase = true) -> "https://$rawApi"
             else -> {
                 output.text = "站点：${site.name}\n站点类型：${site.type}\nAPI：$rawApi\n\nAPI 值看起来不是完整网址。它可能是 Spider 标识符或特殊协议，不能自动补成 HTTPS。"
                 showStatus("API 地址格式无法识别")
                 return
             }
+        }
+        if (!base.startsWith("http://", true) && !base.startsWith("https://", true)) {
+            output.text = "站点：${site.name}\n无法将 API 地址解析为 HTTP(S)：$rawApi"
+            showStatus("API 地址格式无法识别")
+            return
         }
         loadVodPage(site, base, null, 1)
     }
@@ -426,7 +642,7 @@ class MainActivity : Activity() {
                     val body = (if (code in 200..399) connection.inputStream else connection.errorStream)
                         ?.use { stream -> String(stream.readBytes().take(1024 * 1024).toByteArray(), Charset.forName("UTF-8")) } ?: ""
                     if (code !in 200..399) error("HTTP $code；Content-Type：$contentType")
-                    val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+                    val trimmed = body.trim().removePrefix("\uFEFF")
                     val json = runCatching { JSONObject(trimmed) }.getOrNull()
                         ?: error("接口没有返回 JSON 对象。Content-Type：$contentType；响应开头：${trimmed.take(160)}")
                     val data = json.optJSONObject("data") ?: json
@@ -450,7 +666,8 @@ class MainActivity : Activity() {
                             pic = item.opt("vod_pic").safeString("")
                         )
                     }
-                    VodPageResult(categories, movies, json.optString("msg", ""))
+                    val pageCount = data.opt("pagecount").safeInt(json.opt("pagecount").safeInt(1)).coerceAtLeast(1)
+                    VodPageResult(categories, movies, json.optString("msg", ""), pageCount = pageCount)
                 } finally {
                     connection.disconnect()
                 }
@@ -461,10 +678,22 @@ class MainActivity : Activity() {
                     showStatus("影片加载失败")
                     return@runOnUiThread
                 }
-                output.text = "站点：${site.name}\n分类：${parsed.categories.size} 个\n影片：${parsed.movies.size} 部\n可输入关键词搜索，或选择分类筛选影片。"
-                val keywordInput = EditText(this).apply { hint = "搜索影片关键词"; isSingleLine = true; textSize = 16f; setTextColor(0xFFFFFFFF.toInt()); setHintTextColor(0xFF8B96A9.toInt()) }
+                output.text = "站点：${site.name}\n分类：${parsed.categories.size} 个\n影片：${parsed.movies.size} 部\n当前页：$page / ${parsed.pageCount}\n可输入关键词搜索，或选择分类筛选影片。"
+                val keywordInput = EditText(this).apply {
+                    hint = "搜索影片关键词"
+                    isSingleLine = true
+                    textSize = 16f
+                    setTextColor(0xFFFFFFFF.toInt())
+                    setHintTextColor(0xFF8B96A9.toInt())
+                }
                 itemList.addView(keywordInput)
-                itemList.addView(actionButton("搜索") { val keyword = keywordInput.text.toString().trim(); if (keyword.isBlank()) showStatus("请输入搜索关键词") else loadVodSearch(site, base, keyword) })
+                itemList.addView(actionButton("搜索") {
+                    val keyword = keywordInput.text.toString().trim()
+                    if (keyword.isBlank()) showStatus("请输入搜索关键词") else loadVodSearch(site, base, keyword)
+                })
+                if (category != null) {
+                    itemList.addView(actionButton("返回全部影片") { loadVodPage(site, base, null, 1) })
+                }
                 parsed.categories.forEach { cat ->
                     itemList.addView(actionButton("分类：${cat.name}") {
                         loadVodPage(site, base, cat, 1)
@@ -475,10 +704,16 @@ class MainActivity : Activity() {
                         loadVodDetail(site, base, movie)
                     })
                 }
+                if (parsed.pageCount > 1) {
+                    val pageButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                    if (page > 1) pageButtons.addView(actionButton("上一页") { loadVodPage(site, base, category, page - 1) })
+                    if (page < parsed.pageCount) pageButtons.addView(actionButton("下一页") { loadVodPage(site, base, category, page + 1) })
+                    itemList.addView(pageButtons)
+                }
                 if (parsed.movies.isEmpty() && parsed.categories.isEmpty()) {
                     output.text = output.text.toString() + "\n\n接口返回 JSON，但没有识别到 class/list 字段。请检查响应结构。"
                 }
-                showStatus("已加载 ${parsed.categories.size} 个分类、${parsed.movies.size} 部影片")
+                showStatus("已加载第 $page 页：${parsed.movies.size} 部影片")
             }
         }
     }
@@ -549,16 +784,95 @@ class MainActivity : Activity() {
                 val detail = result.getOrNull()
                 if (detail == null) { output.text = "影片：${movie.name}\n详情加载失败：${result.exceptionOrNull()?.message ?: "未知错误"}"; showStatus("详情加载失败"); return@runOnUiThread }
                 output.text = "影片：${detail.first}\n简介：${detail.second.take(500)}\n可播放集数：${detail.third.size}"
+                val episodePlaylist = JSONArray()
                 detail.third.forEach { episode ->
+                    val parsed = parseTvBoxPlaybackEntry(episode.second)
+                    episodePlaylist.put(JSONObject()
+                        .put("title", "${detail.first} · ${episode.first}")
+                        .put("url", parsed.first)
+                        .put("headers", parsed.second))
+                }
+                val episodePlaylistFile = java.io.File(cacheDir, "vod-playlist.json")
+                episodePlaylistFile.writeText(episodePlaylist.toString(), Charsets.UTF_8)
+                detail.third.forEachIndexed { index, episode ->
                     itemList.addView(actionButton(episode.first) {
+                        val parsed = parseTvBoxPlaybackEntry(episode.second)
+                        if (!parsed.first.startsWith("http://", true) && !parsed.first.startsWith("https://", true)) {
+                            output.text = "播放地址格式不受支持：\n${episode.second.take(300)}"
+                            showStatus("播放地址无效")
+                            return@actionButton
+                        }
                         val intent = android.content.Intent(this, PlayerActivity::class.java)
                         intent.putExtra("title", "${detail.first} · ${episode.first}")
-                        intent.putExtra("url", episode.second)
+                        intent.putExtra("url", parsed.first)
+                        intent.putExtra("headers", parsed.second.toString())
+                        intent.putExtra("playlist_file", episodePlaylistFile.absolutePath)
+                        intent.putExtra("playlist_index", index)
+                        intent.putExtra("playlist_label", "集数")
                         startActivity(intent)
                     })
                 }
                 if (detail.third.isEmpty()) output.text = output.text.toString() + "\n未解析到标准 CMS 播放线路。"
                 showStatus(if (detail.third.isEmpty()) "没有可识别的播放线路" else "已加载 ${detail.third.size} 个播放项")
+            }
+        }
+    }
+
+    private fun downloadSpiderArchive(address: String, destination: java.io.File): java.io.File {
+        val connection = openConnection(address)
+        try {
+            val code = connection.responseCode
+            if (code !in 200..299) error("Spider JAR 下载 HTTP $code：$address")
+            if (connection.contentLengthLong > 80L * 1024 * 1024) error("Spider JAR 超过 80 MiB 限制")
+            val tmp = java.io.File(destination.parentFile, destination.name + ".tmp")
+            connection.inputStream.use { input ->
+                tmp.outputStream().buffered().use { out ->
+                    val buffer = ByteArray(8192)
+                    var total = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > 80L * 1024 * 1024) error("Spider JAR 超过 80 MiB 限制")
+                        out.write(buffer, 0, count)
+                    }
+                }
+            }
+            java.util.zip.ZipFile(tmp).use { zip ->
+                if (!zip.entries().hasMoreElements()) error("下载内容不是有效 JAR/ZIP：$address")
+            }
+            if (!tmp.renameTo(destination)) {
+                tmp.copyTo(destination, overwrite = true)
+                tmp.delete()
+            }
+            return destination
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /**
+     * Guarded CatVod Spider providers may rely on JNI libraries packaged inside their
+     * JAR. DexClassLoader only searches its nativeLibraryPath; unpack matching Android
+     * ABI libraries there before initializing the provider.
+     */
+    private fun extractSpiderNativeLibraries(jars: List<java.io.File>, destination: java.io.File) {
+        val supportedAbis = android.os.Build.SUPPORTED_ABIS.toList()
+        jars.forEach { jar ->
+            java.util.zip.ZipFile(jar).use { zip ->
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    if (entry.isDirectory || !entry.name.endsWith(".so")) continue
+                    val normalized = entry.name.replace('\\', '/')
+                    val abi = supportedAbis.firstOrNull { normalized.contains("lib/$it/") } ?: continue
+                    val libraryName = normalized.substringAfter("lib/$abi/").substringAfterLast('/')
+                    if (!libraryName.startsWith("lib") || libraryName.isBlank()) continue
+                    val output = java.io.File(destination, libraryName)
+                    zip.getInputStream(entry).use { input ->
+                        output.outputStream().buffered().use { out -> input.copyTo(out) }
+                    }
+                }
             }
         }
     }
@@ -571,46 +885,156 @@ class MainActivity : Activity() {
             val result = runCatching {
                 val dir = java.io.File(filesDir, "spider").apply { mkdirs() }
                 val safeName = site.name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40).ifBlank { "site" }
-                val jarFile = java.io.File(dir, "$safeName.jar")
-                if (!jarFile.isFile || jarFile.length() < 4) {
-                    val connection = openConnection(jarUrl)
-                    try {
-                        val code = connection.responseCode
-                        if (code !in 200..299) error("JAR 下载 HTTP $code")
-                        if (connection.contentLengthLong > 80L * 1024 * 1024) error("JAR 超过 80 MiB 限制")
-                        val tmp = java.io.File(dir, "$safeName.jar.tmp")
-                        connection.inputStream.use { input -> tmp.outputStream().buffered().use { out ->
-                            val buffer = ByteArray(8192)
-                            var total = 0L
-                            while (true) { val n = input.read(buffer); if (n < 0) break; total += n; if (total > 80L * 1024 * 1024) error("JAR 超过 80 MiB 限制"); out.write(buffer, 0, n) }
-                        } }
-                        java.util.zip.ZipFile(tmp).use { zip -> if (!zip.entries().hasMoreElements()) error("下载内容不是有效 JAR/ZIP") }
-                        if (!tmp.renameTo(jarFile)) { tmp.copyTo(jarFile, overwrite = true); tmp.delete() }
-                    } finally { connection.disconnect() }
+                // TVBox configs may specify a site-specific jar while keeping the shared
+                // CatVod runtime in the top-level "spider" field. Load both archives; the
+                // site jar is first so its provider implementation takes precedence.
+                val archiveUrls = listOf(jarUrl, currentSpiderUrl).filter { it.isNotBlank() }.distinct()
+                val jarFiles = archiveUrls.mapIndexed { index, address ->
+                    val jarName = if (index == 0) "$safeName-site.jar" else "shared-spider.jar"
+                    downloadSpiderArchive(address, java.io.File(dir, jarName))
                 }
+                if (jarFiles.isEmpty()) error("配置中没有可用的 Spider JAR 地址")
                 val optimized = java.io.File(dir, "optimized").apply { mkdirs() }
                 val libs = java.io.File(dir, "libs").apply { mkdirs() }
-                val loader = dalvik.system.DexClassLoader(jarFile.absolutePath, optimized.absolutePath, libs.absolutePath, javaClass.classLoader)
-                val candidates = listOf("com.github.catvod.spider.$classShortName", "com.github.catvod.spider." + classShortName, classShortName)
+                extractSpiderNativeLibraries(jarFiles, libs)
+                val dexPath = jarFiles.joinToString(java.io.File.pathSeparator) { it.absolutePath }
+                val loader = dalvik.system.DexClassLoader(dexPath, optimized.absolutePath, libs.absolutePath, javaClass.classLoader)
+
+                // Match the CatVod/OKTV host bootstrap sequence: initialize the Spider runtime
+                // from the downloaded JAR before loading a guarded Spider class. Some guarded
+                // providers expect this Context hook to have run before DexNative is initialized.
+                val spiderBootstrap = runCatching {
+                    val initClass = loader.loadClass("com.github.catvod.spider.Init")
+                    val initMethod = initClass.getMethod("init", android.content.Context::class.java)
+                    initMethod.invoke(null, this@MainActivity)
+                    "Spider Init.init(Context) 已调用"
+                }.fold(
+                    onSuccess = { it },
+                    onFailure = { "Spider Init bootstrap 未提供或失败：${describeSpiderError(it)}" }
+                )
+
+                val normalizedName = classShortName.removePrefix("csp_").removePrefix("CSP_").trim()
+                val candidates = listOf(
+                    "com.github.catvod.spider.$normalizedName",
+                    "com.github.catvod.spider.${normalizedName.replaceFirstChar { it.uppercase() }}",
+                    normalizedName,
+                    classShortName
+                ).distinct()
+                val loadErrors = mutableListOf<String>()
                 var loadedClass: Class<*>? = null
-                var lastError: Throwable? = null
-                for (candidate in candidates) { try { loadedClass = loader.loadClass(candidate); break } catch (t: Throwable) { lastError = t } }
-                val spiderClass = loadedClass ?: throw IllegalStateException("JAR 中找不到类 ${candidates.joinToString()}：${lastError?.message ?: ""}")
-                val spider = spiderClass.getDeclaredConstructor().newInstance()
-                val init2 = spiderClass.methods.firstOrNull { it.name == "init" && it.parameterTypes.size == 2 }
-                if (init2 != null) init2.invoke(spider, this@MainActivity, site.ext)
-                else spiderClass.methods.firstOrNull { it.name == "init" && it.parameterTypes.size == 1 }?.invoke(spider, this@MainActivity)
-                val home = spiderClass.methods.firstOrNull { it.name == "homeContent" && it.parameterTypes.size == 1 } ?: error("缺少 homeContent(boolean)，不是兼容的 CatVod Spider")
-                val json = JSONObject(home.invoke(spider, true)?.toString().orEmpty())
-                Triple(spider, json, spiderClass.name)
+                for (candidate in candidates) {
+                    try {
+                        loadedClass = loader.loadClass(candidate)
+                        break
+                    } catch (t: Throwable) {
+                        loadErrors.add("$candidate -> ${describeSpiderError(t)}")
+                    }
+                }
+                val spiderClass = loadedClass ?: run {
+                    val discovered = runCatching {
+                        java.util.zip.ZipFile(jarFiles.first()).use { zip ->
+                            val e = zip.entries()
+                            val names = mutableListOf<String>()
+                            while (e.hasMoreElements()) {
+                                val entry = e.nextElement()
+                                if (entry.name.endsWith(".class") && !entry.name.contains("\\$")) {
+                                    names.add(entry.name.removeSuffix(".class").replace('/', '.'))
+                                }
+                                if (names.size >= 80) break
+                            }
+                            names.joinToString("\n").ifBlank { "(未发现普通 .class；可能是 DEX/JAR 格式或非可执行文件)" }
+                        }
+                    }.getOrDefault("(读取 JAR 类清单失败)")
+                    throw IllegalStateException(
+                        "无法加载 Spider 类。尝试类名：${candidates.joinToString()}\n" +
+                            "类加载错误：${loadErrors.joinToString(" | ")}\n" +
+                            "JAR 内部类样例：\n$discovered"
+                    )
+                }
+                val constructor = runCatching { spiderClass.getDeclaredConstructor() }.getOrElse {
+                    throw IllegalStateException("类 ${spiderClass.name} 没有无参构造函数：${describeSpiderError(it)}")
+                }
+                constructor.isAccessible = true
+                val spider = constructor.newInstance()
+                val methods = spiderClass.methods.toList()
+                val initMethods = methods.filter { it.name == "init" }.sortedBy { it.parameterTypes.size }
+                val init2 = initMethods.firstOrNull {
+                    it.parameterTypes.size == 2 &&
+                        it.parameterTypes[0].isAssignableFrom(this@MainActivity.javaClass) &&
+                        (it.parameterTypes[1] == String::class.java || it.parameterTypes[1] == JSONObject::class.java ||
+                            java.util.Map::class.java.isAssignableFrom(it.parameterTypes[1]))
+                }
+                val init1 = initMethods.firstOrNull {
+                    it.parameterTypes.size == 1 && it.parameterTypes[0].isAssignableFrom(this@MainActivity.javaClass)
+                }
+                when {
+                    init2 != null -> {
+                        val second = when (init2.parameterTypes[1]) {
+                            String::class.java -> site.ext
+                            JSONObject::class.java -> runCatching { JSONObject(site.ext.ifBlank { "{}" }) }.getOrElse { JSONObject() }
+                            else -> runCatching {
+                                val obj = JSONObject(site.ext.ifBlank { "{}" })
+                                HashMap<String, String>().apply {
+                                    val keys = obj.keys()
+                                    while (keys.hasNext()) {
+                                        val key = keys.next()
+                                        put(key, obj.opt(key).safeString(""))
+                                    }
+                                }
+                            }.getOrElse { HashMap<String, String>() }
+                        }
+                        invokeSpiderMethod(init2, spider, this@MainActivity, second)
+                    }
+                    init1 != null -> invokeSpiderMethod(init1, spider, this@MainActivity)
+                    initMethods.isNotEmpty() -> throw IllegalStateException(
+                        "发现 init 方法，但参数不兼容：${initMethods.joinToString { m -> m.parameterTypes.joinToString(prefix = "init(", postfix = ")") { it.simpleName } }}"
+                    )
+                }
+                val home = methods.firstOrNull {
+                    it.name == "homeContent" && it.parameterTypes.size == 1 &&
+                        (it.parameterTypes[0] == Boolean::class.javaPrimitiveType || it.parameterTypes[0] == Boolean::class.java)
+                } ?: throw IllegalStateException(
+                    "类 ${spiderClass.name} 缺少 homeContent(boolean)。可用方法：${methods.filter { it.name in listOf("init", "homeContent", "categoryContent", "detailContent", "playerContent") }.joinToString { m -> m.name + "(" + m.parameterTypes.joinToString { it.simpleName } + ")" }.ifBlank { "(未找到常见 Spider 方法)" }}"
+                )
+                val homeResult = invokeSpiderMethod(home, spider, true)?.toString().orEmpty()
+                if (homeResult.isBlank()) throw IllegalStateException("homeContent(true) 返回空内容")
+                val json = runCatching { JSONObject(homeResult) }.getOrElse {
+                    throw IllegalStateException("homeContent 返回的不是 JSON 对象：${homeResult.take(240)}；错误：${describeSpiderError(it)}")
+                }
+                // Some Spider implementations wrap the CatVod payload in a top-level
+                // "data" object. Normalize it once so the category/movie UI can see it.
+                val payload = json.optJSONObject("data") ?: json
+                Triple(spider, payload, spiderClass.name + "（" + spiderBootstrap + "）")
             }
             runOnUiThread {
                 val loaded = result.getOrNull()
-                if (loaded == null) { output.text = "Spider 启动失败：${result.exceptionOrNull()?.cause?.message ?: result.exceptionOrNull()?.message ?: "未知错误"}\n\n可能是类名、基类 ABI、依赖或初始化方式不兼容。"; showStatus("Spider 启动失败"); return@runOnUiThread }
+                if (loaded == null) {
+                    val failure = result.exceptionOrNull()
+                    val details = failure?.let { describeSpiderError(it) } ?: "未捕获到异常对象"
+                    val guardHint = if (details.contains("com.github.catvod.spider.DexNative") && details.contains("YGPGuard")) {
+                        "\n\n诊断结论：检测到 YGPGuard 在 DexNative 静态初始化阶段失败。此类加固 Spider 通常依赖与其匹配的 CatVod/TVBox 宿主运行时、加固资源或原生库；当前应用的通用 DexClassLoader 不能保证兼容。请优先换用未加固且兼容 CatVod Spider ABI 的 JAR，或集成该 JAR 对应版本的官方宿主运行时。仅修改站点 api/ext 通常无法修复此错误。"
+                    } else ""
+                    output.text = "Spider 启动失败：\n$details$guardHint\n\n请检查异常中的类名、依赖、初始化参数或 Spider ABI。"
+                    showStatus("Spider 启动失败（已输出诊断建议）")
+                    return@runOnUiThread
+                }
                 val spider = loaded.first
                 val json = loaded.second
                 output.text = "Spider：${loaded.third}\n分类：${json.optJSONArray("class")?.length() ?: 0}\n影片：${json.optJSONArray("list")?.length() ?: 0}"
                 itemList.removeAllViews()
+                val spiderSearchInput = EditText(this).apply {
+                    hint = "搜索此 Spider 站点"
+                    isSingleLine = true
+                    textSize = 16f
+                    setTextColor(0xFFFFFFFF.toInt())
+                    setHintTextColor(0xFF8B96A9.toInt())
+                }
+                itemList.addView(spiderSearchInput)
+                itemList.addView(actionButton("搜索 Spider 站点") {
+                    val keyword = spiderSearchInput.text.toString().trim()
+                    if (keyword.isBlank()) showStatus("请输入搜索关键词")
+                    else loadSpiderSearch(spider, site, keyword)
+                })
                 val categories = json.optJSONArray("class") ?: JSONArray()
                 for (i in 0 until categories.length()) {
                     val cat = categories.optJSONObject(i) ?: continue
@@ -624,24 +1048,110 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun loadSpiderCategory(spider: Any, site: SiteInfo, categoryId: String) {
-        showStatus("正在加载 Spider 分类…")
+    private fun invokeSpiderMethod(method: java.lang.reflect.Method, receiver: Any, vararg args: Any?): Any? {
+        return try {
+            method.invoke(receiver, *args)
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw e.targetException ?: e
+        }
+    }
+
+    private fun describeSpiderError(error: Throwable): String {
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+        val parts = mutableListOf<String>()
+        var current: Throwable? = error
+        while (current != null && seen.add(current) && parts.size < 8) {
+            val node = current
+            val message = node.message?.takeIf { it.isNotBlank() } ?: "(无消息)"
+            val frames = node.stackTrace.take(10).joinToString("\n") { "    at $it" }
+            parts.add("${node.javaClass.name}: $message" + if (frames.isNotBlank()) "\n$frames" else "")
+            current = when (node) {
+                is java.lang.reflect.InvocationTargetException -> node.targetException ?: node.cause
+                else -> node.cause
+            }
+        }
+        return parts.joinToString("\nCaused by: ")
+    }
+
+    private fun loadSpiderSearch(spider: Any, site: SiteInfo, keyword: String) {
+        showStatus("正在搜索 Spider 站点：$keyword")
+        output.text = "站点：${site.name}\n关键词：$keyword\n正在调用 Spider 搜索接口…"
+        itemList.removeAllViews()
         executor.execute {
             val result = runCatching {
-                val method = spider.javaClass.methods.firstOrNull { it.name == "categoryContent" && it.parameterTypes.size == 4 } ?: error("缺少 categoryContent 方法")
-                val extend = runCatching { JSONObject(site.ext).let { obj -> HashMap<String, String>().apply { obj.keys().forEach { key -> put(key, obj.opt(key).safeString("")) } } } }.getOrElse { HashMap() }
-                JSONObject(method.invoke(spider, categoryId, "1", true, extend)?.toString().orEmpty())
+                val candidates = spider.javaClass.methods.filter {
+                    it.name == "searchContent" && it.parameterTypes.isNotEmpty() &&
+                        it.parameterTypes[0] == String::class.java &&
+                        it.parameterTypes.size in 2..3
+                }.sortedBy { it.parameterTypes.size }
+                val method = candidates.firstOrNull() ?: error("此 Spider 没有兼容的 searchContent(String, …) 方法")
+                val args = when (method.parameterTypes.size) {
+                    2 -> arrayOf<Any?>(keyword, false)
+                    3 -> {
+                        val third = method.parameterTypes[2]
+                        val ext = runCatching {
+                            val obj = JSONObject(site.ext.ifBlank { "{}" })
+                            HashMap<String, String>().apply {
+                                val keys = obj.keys()
+                                while (keys.hasNext()) {
+                                    val key = keys.next()
+                                    put(key, obj.opt(key).safeString(""))
+                                }
+                            }
+                        }.getOrElse { HashMap<String, String>() }
+                        arrayOf(keyword, false, when { java.util.Map::class.java.isAssignableFrom(third) -> ext; third == JSONObject::class.java -> runCatching { JSONObject(site.ext.ifBlank { "{}" }) }.getOrElse { JSONObject() }; else -> site.ext })
+                    }
+                    else -> error("不支持的 Spider 搜索接口")
+                }
+                val response = invokeSpiderMethod(method, spider, *args)?.toString().orEmpty()
+                val json = JSONObject(response)
+                val data = json.optJSONObject("data") ?: json
+                val videos = data.optJSONArray("list") ?: json.optJSONArray("list") ?: JSONArray()
+                data to videos
             }
             runOnUiThread {
-                val json = result.getOrNull()
-                if (json == null) { output.text = "分类加载失败：${result.exceptionOrNull()?.cause?.message ?: result.exceptionOrNull()?.message}"; showStatus("分类加载失败"); return@runOnUiThread }
-                output.text = "分类：$categoryId\n影片：${json.optJSONArray("list")?.length() ?: 0}"
-                itemList.removeAllViews()
-                addSpiderVideoButtons(spider, site, json.optJSONArray("list") ?: JSONArray())
+                val value = result.getOrNull()
+                if (value == null) {
+                    output.text = "Spider 搜索失败：${result.exceptionOrNull()?.let { describeSpiderError(it) } ?: "未知错误"}"
+                    showStatus("Spider 搜索失败")
+                    return@runOnUiThread
+                }
+                val videos = value.second
+                output.text = "站点：${site.name}\n关键词：$keyword\n搜索结果：${videos.length()} 部"
+                addSpiderVideoButtons(spider, site, videos)
+                showStatus("Spider 搜索完成：${videos.length()} 部")
             }
         }
     }
 
+    private fun loadSpiderCategory(spider: Any, site: SiteInfo, categoryId: String, page: Int = 1) {
+        showStatus("正在加载 Spider 分类（第 ${page} 页）…")
+        output.text = "站点：${site.name}\n分类：$categoryId\n页码：$page\n正在请求 Spider…"
+        itemList.removeAllViews()
+        executor.execute {
+            val result = runCatching {
+                val method = spider.javaClass.methods.firstOrNull { it.name == "categoryContent" && it.parameterTypes.size == 4 } ?: error("缺少 categoryContent 方法")
+                val extend = runCatching { JSONObject(site.ext).let { obj -> HashMap<String, String>().apply { obj.keys().forEach { key -> put(key, obj.opt(key).safeString("")) } } } }.getOrElse { HashMap() }
+                val raw = JSONObject(invokeSpiderMethod(method, spider, categoryId, page.toString(), true, extend)?.toString().orEmpty())
+                raw.optJSONObject("data") ?: raw
+            }
+            runOnUiThread {
+                val json = result.getOrNull()
+                if (json == null) {
+                    output.text = "分类加载失败：${result.exceptionOrNull()?.let { describeSpiderError(it) } ?: "未知错误"}"
+                    showStatus("分类加载失败")
+                    return@runOnUiThread
+                }
+                val videos = json.optJSONArray("list") ?: JSONArray()
+                val pageCount = json.opt("pagecount").safeInt(json.opt("page_count").safeInt(page))
+                output.text = "站点：${site.name}\n分类：$categoryId\n当前页：$page / ${pageCount.coerceAtLeast(page)}\n影片：${videos.length()}"
+                if (page > 1) itemList.addView(actionButton("上一页") { loadSpiderCategory(spider, site, categoryId, page - 1) })
+                if (page < pageCount) itemList.addView(actionButton("下一页") { loadSpiderCategory(spider, site, categoryId, page + 1) })
+                addSpiderVideoButtons(spider, site, videos)
+                showStatus("Spider 分类加载完成")
+            }
+        }
+    }
     private fun addSpiderVideoButtons(spider: Any, site: SiteInfo, videos: JSONArray) {
         for (i in 0 until videos.length()) {
             val video = videos.optJSONObject(i) ?: continue
@@ -653,7 +1163,8 @@ class MainActivity : Activity() {
                 executor.execute {
                     val result = runCatching {
                         val method = spider.javaClass.methods.firstOrNull { it.name == "detailContent" && it.parameterTypes.size == 1 } ?: error("缺少 detailContent 方法")
-                        val detailJson = JSONObject(method.invoke(spider, listOf(id))?.toString().orEmpty())
+                        val detailRaw = JSONObject(invokeSpiderMethod(method, spider, listOf(id))?.toString().orEmpty())
+                        val detailJson = detailRaw.optJSONObject("data") ?: detailRaw
                         val detail = detailJson.optJSONArray("list")?.optJSONObject(0) ?: detailJson.optJSONObject("vod") ?: error("详情中没有影片")
                         val flags = detail.opt("vod_play_from").safeString("").split("$" + "$" + "$")
                         val groups = detail.opt("vod_play_url").safeString("").split("$" + "$" + "$")
@@ -666,29 +1177,90 @@ class MainActivity : Activity() {
                         if (detail == null) { output.text = "详情失败：${result.exceptionOrNull()?.cause?.message ?: result.exceptionOrNull()?.message}"; showStatus("详情加载失败"); return@runOnUiThread }
                         output.text = "影片：${detail.first}\n简介：${detail.second.take(400)}\n剧集：${detail.third.size}"
                         itemList.removeAllViews()
-                        detail.third.forEach { ep -> itemList.addView(actionButton("${ep.first} · ${ep.second}") {
-                            executor.execute {
-                                val playResult = runCatching {
-                                    val method = spider.javaClass.methods.firstOrNull { it.name == "playerContent" && it.parameterTypes.size == 3 } ?: error("缺少 playerContent 方法")
-                                    val playJson = JSONObject(method.invoke(spider, ep.first, ep.third, emptyList<String>())?.toString().orEmpty())
-                                    val url = playJson.opt("url").safeString(ep.third)
-                                    if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) error("无效播放地址：$url")
-                                    val headers = playJson.optJSONObject("header") ?: playJson.optJSONObject("headers") ?: JSONObject()
-                                    Triple(url, headers.toString(), playJson.opt("parse").safeString(""))
+                        detail.third.forEachIndexed { selectedIndex, selectedEpisode ->
+                            itemList.addView(actionButton("${selectedEpisode.first} · ${selectedEpisode.second}") {
+                                showStatus("正在解析播放地址…")
+                                output.text = "影片：${detail.first}\n正在准备第 ${selectedIndex + 1} 集。"
+                                executor.execute {
+                                    val playlistResult = runCatching {
+                                        val playerMethod = spider.javaClass.methods.firstOrNull { it.name == "playerContent" && it.parameterTypes.size == 3 } ?: error("缺少 playerContent 方法")
+                                        fun resolveEpisode(episode: Triple<String, String, String>, strict: Boolean): JSONObject {
+                                            val rawUrl = episode.third.trim()
+                                            val resolved = runCatching {
+                                                JSONObject(invokeSpiderMethod(playerMethod, spider, episode.first, rawUrl, emptyList<String>())?.toString().orEmpty())
+                                            }.getOrNull()
+                                            val parse = resolved?.opt("parse").safeString("")
+                                            val url = resolved?.opt("url").safeString(rawUrl).trim()
+                                            if (strict && parse.isNotBlank() && parse != "0") error("当前剧集需要外部解析器（parse=$parse），尚不能直接播放")
+                                            val finalUrl = if (url.startsWith("http://", true) || url.startsWith("https://", true)) url else rawUrl
+                                            if (!finalUrl.startsWith("http://", true) && !finalUrl.startsWith("https://", true)) error("无效播放地址：$finalUrl")
+                                            val headers = resolved?.optJSONObject("header") ?: resolved?.optJSONObject("headers") ?: JSONObject()
+                                            return JSONObject()
+                                                .put("title", "${detail.first} · ${episode.first} · ${episode.second}")
+                                                .put("url", finalUrl)
+                                                .put("headers", headers)
+                                        }
+                                        // The selected episode must resolve successfully. Other episodes are best-effort:
+                                        // one incompatible episode should not prevent the current episode from playing.
+                                        val selected = resolveEpisode(selectedEpisode, true)
+                                        val playlist = JSONArray()
+                                        detail.third.forEachIndexed { index, episode ->
+                                            val item = if (index == selectedIndex) selected else runCatching { resolveEpisode(episode, false) }
+                                                .getOrElse {
+                                                    JSONObject().put("title", "${detail.first} · ${episode.first} · ${episode.second}")
+                                                        .put("url", episode.third).put("headers", JSONObject())
+                                                }
+                                            playlist.put(item)
+                                        }
+                                        val file = java.io.File(cacheDir, "spider-playlist-${System.currentTimeMillis()}.json")
+                                        file.writeText(playlist.toString(), Charsets.UTF_8)
+                                        file to playlist
+                                    }
+                                    runOnUiThread {
+                                        val resolved = playlistResult.getOrNull()
+                                        if (resolved == null) {
+                                            output.text = "播放地址准备失败：${playlistResult.exceptionOrNull()?.let { describeSpiderError(it) } ?: "未知错误"}"
+                                            showStatus("播放地址准备失败")
+                                        } else {
+                                            val entry = resolved.second.optJSONObject(selectedIndex) ?: JSONObject()
+                                            startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java)
+                                                .putExtra("title", entry.optString("title", "${detail.first} · ${selectedEpisode.second}"))
+                                                .putExtra("url", entry.optString("url", selectedEpisode.third))
+                                                .putExtra("headers", entry.optJSONObject("headers")?.toString() ?: "{}")
+                                                .putExtra("playlist_file", resolved.first.absolutePath)
+                                                .putExtra("playlist_index", selectedIndex)
+                                                .putExtra("playlist_label", "剧集"))
+                                            showStatus("正在播放；已尽力准备连续剧集")
+                                        }
+                                    }
                                 }
-                                runOnUiThread {
-                                    val playback = playResult.getOrNull()
-                                    if (playback == null) { output.text = "解析播放地址失败：${playResult.exceptionOrNull()?.cause?.message ?: playResult.exceptionOrNull()?.message}"; showStatus("播放解析失败") }
-                                    else if (playback.third.isNotBlank() && playback.third != "0") { output.text = "该 Spider 返回了需要额外解析器的播放标记：${playback.third}\n当前播放器仅支持 Spider 已返回的直链或可直接播放的媒体地址。"; showStatus("需要外部解析器") }
-                                    else { startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java).putExtra("title", "${detail.first} · ${ep.second}").putExtra("url", playback.first).putExtra("headers", playback.second)); showStatus("正在播放") }
-                                }
-                            }
-                        }) }
+                            })
+                        }
                         showStatus("已解析剧集")
                     }
                 }
             })
         }
+    }
+
+    /**
+     * TVBox CMS commonly appends request headers to a play URL as:
+     * https://host/video.m3u8|||{"Referer":"https://host/","User-Agent":"..."}
+     * Passing the entire value to ExoPlayer makes it treat the header suffix as part of
+     * the URL, so playback fails before useful diagnostics can be shown.
+     */
+    private fun parseTvBoxPlaybackEntry(raw: String): Pair<String, JSONObject> {
+        val value = raw.trim()
+        val separator = value.indexOf("|||")
+        if (separator < 0) return value to JSONObject()
+        val mediaUrl = value.substring(0, separator).trim()
+        val headerText = value.substring(separator + 3).trim()
+        val headers = runCatching { JSONObject(headerText) }.getOrElse {
+            // Some sources URL-encode the JSON suffix.
+            runCatching { JSONObject(java.net.URLDecoder.decode(headerText, "UTF-8")) }
+                .getOrElse { JSONObject() }
+        }
+        return mediaUrl to headers
     }
 
     private fun resolveReference(baseUrl: String, reference: String): String {
@@ -700,11 +1272,27 @@ class MainActivity : Activity() {
     }
 
     private fun appendApiParams(base: String, params: Map<String, String>): String {
-        val separator = if (base.contains("?")) "&" else "?"
-        val encoded = params.entries.joinToString("&") {
-            java.net.URLEncoder.encode(it.key, "UTF-8") + "=" + java.net.URLEncoder.encode(it.value, "UTF-8")
+        // Keep fragments out of the HTTP request and replace existing values for keys
+        // such as ac/pg/t instead of sending duplicate query parameters.
+        val fragmentIndex = base.indexOf('#')
+        val fragment = if (fragmentIndex >= 0) base.substring(fragmentIndex) else ""
+        val address = if (fragmentIndex >= 0) base.substring(0, fragmentIndex) else base
+        val queryIndex = address.indexOf('?')
+        val path = if (queryIndex >= 0) address.substring(0, queryIndex) else address
+        val existingQuery = if (queryIndex >= 0) address.substring(queryIndex + 1) else ""
+        val keysToReplace = params.keys
+        val queryParts = existingQuery.split('&').filter { part ->
+            if (part.isBlank()) false else {
+                val rawKey = part.substringBefore('=')
+                val decodedKey = runCatching { java.net.URLDecoder.decode(rawKey, "UTF-8") }.getOrDefault(rawKey)
+                decodedKey !in keysToReplace
+            }
+        }.toMutableList()
+        queryParts += params.entries.map {
+            java.net.URLEncoder.encode(it.key, "UTF-8") + "=" +
+                java.net.URLEncoder.encode(it.value, "UTF-8")
         }
-        return base + separator + encoded
+        return path + if (queryParts.isEmpty()) fragment else "?" + queryParts.joinToString("&") + fragment
     }
 
     private fun Any?.safeString(fallback: String): String = when (this) {
@@ -720,6 +1308,9 @@ class MainActivity : Activity() {
         else -> fallback
     }
 
+    private data class LiveSource(val name: String, val url: String, val inlineChannels: JSONArray?)
+    private data class LiveChannel(val name: String, val url: String, val group: String = "直播", val referer: String = "", val userAgent: String = "")
+
     private data class VodCategory(val id: String, val name: String)
 
     private data class VodMovie(
@@ -734,7 +1325,8 @@ class MainActivity : Activity() {
         val categories: List<VodCategory>,
         val movies: List<VodMovie>,
         val message: String = "",
-        val error: Boolean = false
+        val error: Boolean = false,
+        val pageCount: Int = 1
     )
 
     private data class SiteInfo(
@@ -776,7 +1368,7 @@ class MainActivity : Activity() {
                         val bytes = it.readBytes()
                         String(bytes.take(64 * 1024).toByteArray(), Charset.forName("UTF-8"))
                     } ?: ""
-                    val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+                    val trimmed = body.trim().removePrefix("\uFEFF")
                     val jsonObject = runCatching { JSONObject(trimmed) }.getOrNull()
                     val jsonArray = if (jsonObject == null) runCatching { JSONArray(trimmed) }.getOrNull() else null
                     val fields = jsonObject?.keys()?.asSequence()?.take(40)?.toList().orEmpty()

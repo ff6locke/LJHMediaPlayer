@@ -8,11 +8,13 @@ android {
     compileSdk = 35
 
     defaultConfig {
+        val ciBuildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 2
+        val appBuildNumber = maxOf(2, ciBuildNumber)
         applicationId = "com.ljh.player"
         minSdk = 23
         targetSdk = 28
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = appBuildNumber
+        versionName = "0.1.$appBuildNumber"
     }
 
     // Keep Java and Kotlin bytecode targets aligned for the CI build.

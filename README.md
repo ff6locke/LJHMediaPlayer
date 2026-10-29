@@ -1,36 +1,53 @@
 # LJHPlayer
 
-LJHPlayer is an Android TV / Android TV box media-player starter project written in Kotlin.
+LJHPlayer is a Kotlin Android TV / Android TV box player that reads TVBox-style JSON configurations and plays compatible VOD streams with AndroidX Media3.
 
-## Features in this starter version
+## Implemented VOD flow
 
-- Android TV launcher entry and landscape UI
-- Default source URL: `http://我不是.摸鱼儿.top`
-- Editable source URL saved with SharedPreferences
-- HTTP connectivity probe, response Content-Type, JSON/HTML classification, and common TVBox field detection
-- Entry points for VOD, live TV, search, and source testing
-- Media3 ExoPlayer / HLS dependencies for the next playback integration phase
+- Load a TVBox JSON configuration from an editable HTTP(S) URL.
+- Read the `sites` or `data` site array and inspect each site's type and API.
+- For standard CMS JSON sites (`type: 0`), load categories and video lists, filter by category, and page through results.
+- Search a CMS site by keyword, load a video's detail response, split `vod_play_from` / `vod_play_url` into source lines and episodes, and open an episode in the player. Direct CMS episodes share a local playlist so you can move to the previous or next episode without returning to the detail page.
+- Run compatible CatVod-style Spider sites when the configured JAR and class ABI are compatible. The loader attempts the CatVod Spider `Init.init(Context)` bootstrap before constructing the site class and refreshes the site JAR when explicitly run. Third-party JARs are executable code; only use sources you trust.
+- Read the top-level `lives` array, list live sources, fetch M3U/M3U8 channel playlists or JSON channel lists (including a top-level JSON array), group channels, and launch HTTP(S) channels in the Media3 player. Relative playlist/channel URLs are resolved against the source URL. M3U `#EXTVLCOPT:http-referrer` and `#EXTVLCOPT:http-user-agent` are passed as request headers; supported JSON channel entries may also provide `referer` and `user-agent`.
+- Play direct HTTP(S) media URLs with Media3, including common MP4, HLS/M3U8, and DASH/MPD streams. JSON headers such as Referer and Cookie can be passed to the player. Live playback includes previous/next channel controls, and large channel lists are stored in app cache rather than sent through a large Android Intent.
 
-## Source validation note
+## Configure a TVBox source
 
-The configured root URL may serve a navigation page rather than a TVBox JSON API. A successful page load does not prove the JSON API, VOD, live TV, or search functions work. Open the provider's primary/backup entries and set the actual configuration URL in the app's source settings before testing.
+1. Install and open LJHPlayer on an Android TV device, TV box, or Android emulator.
+2. Paste a **direct URL to a TVBox JSON file** into the source field. A navigation page, HTML webpage, or image URL is not a configuration file.
+3. Tap **检测接口** to check the HTTP response and JSON shape.
+4. Tap **加载点播站点**, then choose a `type: 0` CMS JSON site to browse categories and videos.
+5. Search for a title or open a video, choose an episode, and use the player's on-screen controls or remote control.
+
+The default source URL is only a convenience and may become unavailable. Replace it with a JSON configuration you are authorized to use. A valid configuration does not guarantee every listed site works: sites may be offline, require headers, use unsupported parser types, or return a URL that is not a direct media stream.
 
 ## Build
 
-Requirements: Android Studio, JDK 17, and Android SDK Platform 35.
+Requirements:
 
-Open this repository in Android Studio and wait for Gradle Sync, then run the app or execute:
+- Android Studio with Android SDK Platform 35 installed
+- JDK 17
+- Gradle compatible with Android Gradle Plugin 8.7.3 (Gradle 8.9 recommended)
+
+Open the repository root in Android Studio and wait for Gradle Sync. To build a debug APK from a terminal with Gradle installed:
 
 ```bash
 gradle assembleDebug
 ```
 
-The debug APK should be generated at `app/build/outputs/apk/debug/app-debug.apk`.
+The APK path is:
 
-A GitHub Actions workflow builds the debug APK on pushes to `main` and manual workflow dispatch. Download it from the workflow run's Artifacts section.
+```
+app/build/outputs/apk/debug/app-debug.apk
+```
 
-## Current scope
+The GitHub Actions workflow builds a debug APK on pushes to `main`, pull requests targeting `main`, and manual workflow dispatch. Download the `LJHPlayer-debug-apk` artifact from a successful workflow run.
 
-This is an initial source-probe and configuration-switching scaffold. Real VOD listings, live channel parsing, cross-source search, and playback URL resolution still require the provider's actual API response schema. No successful APK build or live playback has been claimed yet.
+## Limitations
 
-Use only streams and content you are authorized to access.
+- CMS JSON `type: 0` is the primary supported direct API format. XPath and other custom engines need their own adapters.
+- Live playlist support covers HTTP(S) M3U playlists and common JSON channel arrays. EPG display, catch-up playback, multicast/UDP sources, and provider-specific playlist schemas are not implemented yet.
+- Spider execution is best-effort and depends on the JAR's class names, ABI, runtime dependencies, and initialization contract.
+- The player does not bypass DRM, paywalls, authentication, or a provider's access controls. A stream requiring an external resolver or DRM integration will not play as a plain direct URL.
+- Playback has not been claimed successful for every third-party configuration or source. Use only streams and content you are authorized to access.
