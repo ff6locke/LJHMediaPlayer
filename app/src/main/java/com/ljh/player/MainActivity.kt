@@ -450,7 +450,8 @@ class MainActivity : Activity() {
                             pic = item.opt("vod_pic").safeString("")
                         )
                     }
-                    VodPageResult(categories, movies, json.optString("msg", ""))
+                    val pageCount = data.opt("pagecount").safeInt(json.opt("pagecount").safeInt(1)).coerceAtLeast(1)
+                    VodPageResult(categories, movies, json.optString("msg", ""), pageCount = pageCount)
                 } finally {
                     connection.disconnect()
                 }
@@ -461,10 +462,22 @@ class MainActivity : Activity() {
                     showStatus("影片加载失败")
                     return@runOnUiThread
                 }
-                output.text = "站点：${site.name}\n分类：${parsed.categories.size} 个\n影片：${parsed.movies.size} 部\n可输入关键词搜索，或选择分类筛选影片。"
-                val keywordInput = EditText(this).apply { hint = "搜索影片关键词"; isSingleLine = true; textSize = 16f; setTextColor(0xFFFFFFFF.toInt()); setHintTextColor(0xFF8B96A9.toInt()) }
+                output.text = "站点：${site.name}\n分类：${parsed.categories.size} 个\n影片：${parsed.movies.size} 部\n当前页：$page / ${parsed.pageCount}\n可输入关键词搜索，或选择分类筛选影片。"
+                val keywordInput = EditText(this).apply {
+                    hint = "搜索影片关键词"
+                    isSingleLine = true
+                    textSize = 16f
+                    setTextColor(0xFFFFFFFF.toInt())
+                    setHintTextColor(0xFF8B96A9.toInt())
+                }
                 itemList.addView(keywordInput)
-                itemList.addView(actionButton("搜索") { val keyword = keywordInput.text.toString().trim(); if (keyword.isBlank()) showStatus("请输入搜索关键词") else loadVodSearch(site, base, keyword) })
+                itemList.addView(actionButton("搜索") {
+                    val keyword = keywordInput.text.toString().trim()
+                    if (keyword.isBlank()) showStatus("请输入搜索关键词") else loadVodSearch(site, base, keyword)
+                })
+                if (category != null) {
+                    itemList.addView(actionButton("返回全部影片") { loadVodPage(site, base, null, 1) })
+                }
                 parsed.categories.forEach { cat ->
                     itemList.addView(actionButton("分类：${cat.name}") {
                         loadVodPage(site, base, cat, 1)
@@ -475,10 +488,16 @@ class MainActivity : Activity() {
                         loadVodDetail(site, base, movie)
                     })
                 }
+                if (parsed.pageCount > 1) {
+                    val pageButtons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+                    if (page > 1) pageButtons.addView(actionButton("上一页") { loadVodPage(site, base, category, page - 1) })
+                    if (page < parsed.pageCount) pageButtons.addView(actionButton("下一页") { loadVodPage(site, base, category, page + 1) })
+                    itemList.addView(pageButtons)
+                }
                 if (parsed.movies.isEmpty() && parsed.categories.isEmpty()) {
                     output.text = output.text.toString() + "\n\n接口返回 JSON，但没有识别到 class/list 字段。请检查响应结构。"
                 }
-                showStatus("已加载 ${parsed.categories.size} 个分类、${parsed.movies.size} 部影片")
+                showStatus("已加载第 $page 页：${parsed.movies.size} 部影片")
             }
         }
     }
@@ -734,7 +753,8 @@ class MainActivity : Activity() {
         val categories: List<VodCategory>,
         val movies: List<VodMovie>,
         val message: String = "",
-        val error: Boolean = false
+        val error: Boolean = false,
+        val pageCount: Int = 1
     )
 
     private data class SiteInfo(
