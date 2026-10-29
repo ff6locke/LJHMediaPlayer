@@ -1,6 +1,3 @@
-val ciBuildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 2
-val appBuildNumber = maxOf(2, ciBuildNumber)
-
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -11,6 +8,8 @@ android {
     compileSdk = 35
 
     defaultConfig {
+        val ciBuildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 2
+        val appBuildNumber = maxOf(2, ciBuildNumber)
         applicationId = "com.ljh.player"
         minSdk = 23
         targetSdk = 28
