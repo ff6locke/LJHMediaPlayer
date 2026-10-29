@@ -610,6 +610,20 @@ class MainActivity : Activity() {
                 val optimized = java.io.File(dir, "optimized").apply { mkdirs() }
                 val libs = java.io.File(dir, "libs").apply { mkdirs() }
                 val loader = dalvik.system.DexClassLoader(jarFile.absolutePath, optimized.absolutePath, libs.absolutePath, javaClass.classLoader)
+
+                // Match the CatVod/OKTV host bootstrap sequence: initialize the Spider runtime
+                // from the downloaded JAR before loading a guarded Spider class. Some guarded
+                // providers expect this Context hook to have run before DexNative is initialized.
+                val spiderBootstrap = runCatching {
+                    val initClass = loader.loadClass("com.github.catvod.spider.Init")
+                    val initMethod = initClass.getMethod("init", android.content.Context::class.java)
+                    initMethod.invoke(null, this@MainActivity)
+                    "Spider Init.init(Context) 已调用"
+                }.fold(
+                    onSuccess = { it },
+                    onFailure = { "Spider Init bootstrap 未提供或失败：${describeSpiderError(it)}" }
+                )
+
                 val normalizedName = classShortName.removePrefix("csp_").removePrefix("CSP_").trim()
                 val candidates = listOf(
                     "com.github.catvod.spider.$normalizedName",
