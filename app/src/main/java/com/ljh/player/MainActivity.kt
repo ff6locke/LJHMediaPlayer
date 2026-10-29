@@ -432,7 +432,8 @@ class MainActivity : Activity() {
                                 .putExtra("url", channel.url)
                                 .putExtra("headers", playlistJson.optJSONObject(channels.indexOf(channel))?.optJSONObject("headers")?.toString() ?: "{}")
                                 .putExtra("playlist_file", playlistFile.absolutePath)
-                                .putExtra("playlist_index", channels.indexOf(channel)))
+                                .putExtra("playlist_index", channels.indexOf(channel))
+                                .putExtra("playlist_label", "频道"))
                         })
                     }
                 }
@@ -753,11 +754,23 @@ class MainActivity : Activity() {
                 val detail = result.getOrNull()
                 if (detail == null) { output.text = "影片：${movie.name}\n详情加载失败：${result.exceptionOrNull()?.message ?: "未知错误"}"; showStatus("详情加载失败"); return@runOnUiThread }
                 output.text = "影片：${detail.first}\n简介：${detail.second.take(500)}\n可播放集数：${detail.third.size}"
+                val episodePlaylist = JSONArray()
                 detail.third.forEach { episode ->
+                    episodePlaylist.put(JSONObject()
+                        .put("title", "${detail.first} · ${episode.first}")
+                        .put("url", episode.second)
+                        .put("headers", JSONObject()))
+                }
+                val episodePlaylistFile = java.io.File(cacheDir, "vod-playlist.json")
+                episodePlaylistFile.writeText(episodePlaylist.toString(), Charsets.UTF_8)
+                detail.third.forEachIndexed { index, episode ->
                     itemList.addView(actionButton(episode.first) {
                         val intent = android.content.Intent(this, PlayerActivity::class.java)
                         intent.putExtra("title", "${detail.first} · ${episode.first}")
                         intent.putExtra("url", episode.second)
+                        intent.putExtra("playlist_file", episodePlaylistFile.absolutePath)
+                        intent.putExtra("playlist_index", index)
+                        intent.putExtra("playlist_label", "集数")
                         startActivity(intent)
                     })
                 }
