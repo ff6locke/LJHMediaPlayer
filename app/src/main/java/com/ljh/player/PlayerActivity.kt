@@ -112,7 +112,7 @@ class PlayerActivity : Activity() {
         while (keys.hasNext()) {
             val key = keys.next()
             val value = json.opt(key)
-            if (!value.isNull && value !is JSONObject) {
+            if (value != null && value != JSONObject.NULL && value !is JSONObject) {
                 val text = value.toString()
                 if (key.isNotBlank() && text.isNotBlank()) headers[key] = text
             }
