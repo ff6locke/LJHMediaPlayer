@@ -404,6 +404,17 @@ class MainActivity : Activity() {
                     return@runOnUiThread
                 }
                 val groups = channels.groupBy { it.group.ifBlank { "直播" } }
+                val playlistJson = JSONArray()
+                channels.forEach { entry ->
+                    val headers = JSONObject()
+                    if (entry.referer.isNotBlank()) headers.put("Referer", entry.referer)
+                    if (entry.userAgent.isNotBlank()) headers.put("User-Agent", entry.userAgent)
+                    playlistJson.put(JSONObject()
+                        .put("title", entry.name)
+                        .put("url", entry.url)
+                        .put("headers", headers))
+                }
+                val playlistPayload = playlistJson.toString()
                 output.text = "直播源：${source.name}\n频道：${channels.size} 个\n分组：${groups.size} 个"
                 itemList.addView(actionButton("返回直播源列表") { loadLiveChannels() })
                 groups.forEach { (group, entries) ->
@@ -415,13 +426,12 @@ class MainActivity : Activity() {
                     })
                     entries.forEach { channel ->
                         itemList.addView(actionButton(channel.name) {
-                            val headers = JSONObject()
-                            if (channel.referer.isNotBlank()) headers.put("Referer", channel.referer)
-                            if (channel.userAgent.isNotBlank()) headers.put("User-Agent", channel.userAgent)
                             startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java)
                                 .putExtra("title", channel.name)
                                 .putExtra("url", channel.url)
-                                .putExtra("headers", headers.toString()))
+                                .putExtra("headers", playlistJson.optJSONObject(channels.indexOf(channel))?.optJSONObject("headers")?.toString() ?: "{}")
+                                .putExtra("playlist", playlistPayload)
+                                .putExtra("playlist_index", channels.indexOf(channel)))
                         })
                     }
                 }
