@@ -1032,24 +1032,33 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun loadSpiderCategory(spider: Any, site: SiteInfo, categoryId: String) {
-        showStatus("正在加载 Spider 分类…")
+    private fun loadSpiderCategory(spider: Any, site: SiteInfo, categoryId: String, page: Int = 1) {
+        showStatus("正在加载 Spider 分类（第 ${page} 页）…")
+        output.text = "站点：${site.name}\n分类：$categoryId\n页码：$page\n正在请求 Spider…"
+        itemList.removeAllViews()
         executor.execute {
             val result = runCatching {
                 val method = spider.javaClass.methods.firstOrNull { it.name == "categoryContent" && it.parameterTypes.size == 4 } ?: error("缺少 categoryContent 方法")
                 val extend = runCatching { JSONObject(site.ext).let { obj -> HashMap<String, String>().apply { obj.keys().forEach { key -> put(key, obj.opt(key).safeString("")) } } } }.getOrElse { HashMap() }
-                JSONObject(invokeSpiderMethod(method, spider, categoryId, "1", true, extend)?.toString().orEmpty())
+                JSONObject(invokeSpiderMethod(method, spider, categoryId, page.toString(), true, extend)?.toString().orEmpty())
             }
             runOnUiThread {
                 val json = result.getOrNull()
-                if (json == null) { output.text = "分类加载失败：${result.exceptionOrNull()?.cause?.message ?: result.exceptionOrNull()?.message}"; showStatus("分类加载失败"); return@runOnUiThread }
-                output.text = "分类：$categoryId\n影片：${json.optJSONArray("list")?.length() ?: 0}"
-                itemList.removeAllViews()
-                addSpiderVideoButtons(spider, site, json.optJSONArray("list") ?: JSONArray())
+                if (json == null) {
+                    output.text = "分类加载失败：${result.exceptionOrNull()?.let { describeSpiderError(it) } ?: "未知错误"}"
+                    showStatus("分类加载失败")
+                    return@runOnUiThread
+                }
+                val videos = json.optJSONArray("list") ?: JSONArray()
+                val pageCount = json.opt("pagecount").safeInt(json.opt("page_count").safeInt(page))
+                output.text = "站点：${site.name}\n分类：$categoryId\n当前页：$page / ${pageCount.coerceAtLeast(page)}\n影片：${videos.length()}"
+                if (page > 1) itemList.addView(actionButton("上一页") { loadSpiderCategory(spider, site, categoryId, page - 1) })
+                if (page < pageCount) itemList.addView(actionButton("下一页") { loadSpiderCategory(spider, site, categoryId, page + 1) })
+                addSpiderVideoButtons(spider, site, videos)
+                showStatus("Spider 分类加载完成")
             }
         }
     }
-
     private fun addSpiderVideoButtons(spider: Any, site: SiteInfo, videos: JSONArray) {
         for (i in 0 until videos.length()) {
             val video = videos.optJSONObject(i) ?: continue
