@@ -343,6 +343,7 @@ class MainActivity : Activity() {
                         var pendingName = ""
                         var pendingGroup = "直播"
                         var pendingReferer = ""
+                        var pendingUserAgent = ""
                         body.lineSequence().forEach { rawLine ->
                             val line = rawLine.trim()
                             when {
@@ -351,12 +352,13 @@ class MainActivity : Activity() {
                                     pendingGroup = Regex("group-title=\"([^\"]*)\"").find(line)?.groupValues?.get(1)?.ifBlank { "直播" } ?: "直播"
                                 }
                                 line.startsWith("#EXTVLCOPT:http-referrer=", true) -> pendingReferer = line.substringAfter('=').trim()
-                                line.startsWith("#EXTVLCOPT:http-user-agent=", true) -> Unit
+                                line.startsWith("#EXTVLCOPT:http-user-agent=", true) -> pendingUserAgent = line.substringAfter('=').trim()
                                 line.startsWith("#") || line.isBlank() -> Unit
                                 line.startsWith("http://", true) || line.startsWith("https://", true) -> {
-                                    channels.add(LiveChannel(pendingName.ifBlank { line.substringAfterLast('/').substringBefore('?') }, line, pendingGroup, pendingReferer))
+                                    channels.add(LiveChannel(pendingName.ifBlank { line.substringAfterLast('/').substringBefore('?') }, resolveReference(source.url, line), pendingGroup, pendingReferer, pendingUserAgent))
                                     pendingName = ""
                                     pendingReferer = ""
+                                    pendingUserAgent = ""
                                 }
                             }
                         }
@@ -373,7 +375,7 @@ class MainActivity : Activity() {
                                 else -> rawUrl?.toString().orEmpty()
                             }.trim()
                             if (url.startsWith("http://", true) || url.startsWith("https://", true)) {
-                                channels.add(LiveChannel(name, url, item.optString("group", item.optString("group-title", "直播"))))
+                                channels.add(LiveChannel(name, resolveReference(source.url, url), item.optString("group", item.optString("group-title", "直播"))))
                             }
                         }
                     }
@@ -402,6 +404,7 @@ class MainActivity : Activity() {
                         itemList.addView(actionButton(channel.name) {
                             val headers = JSONObject()
                             if (channel.referer.isNotBlank()) headers.put("Referer", channel.referer)
+                            if (channel.userAgent.isNotBlank()) headers.put("User-Agent", channel.userAgent)
                             startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java)
                                 .putExtra("title", channel.name)
                                 .putExtra("url", channel.url)
@@ -1018,7 +1021,7 @@ class MainActivity : Activity() {
     }
 
     private data class LiveSource(val name: String, val url: String, val inlineChannels: JSONArray?)
-    private data class LiveChannel(val name: String, val url: String, val group: String = "直播", val referer: String = "")
+    private data class LiveChannel(val name: String, val url: String, val group: String = "直播", val referer: String = "", val userAgent: String = "")
 
     private data class VodCategory(val id: String, val name: String)
 
