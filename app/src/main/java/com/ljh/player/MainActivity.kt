@@ -558,12 +558,19 @@ class MainActivity : Activity() {
             rawApi.startsWith("https://", ignoreCase = true) || rawApi.startsWith("http://", ignoreCase = true) -> rawApi
             rawApi.startsWith("//") -> "https:$rawApi"
             rawApi.startsWith("www.", ignoreCase = true) -> "https://$rawApi"
+            rawApi.startsWith("/") || rawApi.startsWith("./") || rawApi.startsWith("../") ||
+                (rawApi.contains("/") && !rawApi.substringBefore('/').contains(".")) -> resolveReference(currentSource(), rawApi)
             rawApi.contains(".") && !rawApi.contains(" ") && !rawApi.startsWith("csp_", ignoreCase = true) -> "https://$rawApi"
             else -> {
                 output.text = "站点：${site.name}\n站点类型：${site.type}\nAPI：$rawApi\n\nAPI 值看起来不是完整网址。它可能是 Spider 标识符或特殊协议，不能自动补成 HTTPS。"
                 showStatus("API 地址格式无法识别")
                 return
             }
+        }
+        if (!base.startsWith("http://", true) && !base.startsWith("https://", true)) {
+            output.text = "站点：${site.name}\n无法将 API 地址解析为 HTTP(S)：$rawApi"
+            showStatus("API 地址格式无法识别")
+            return
         }
         loadVodPage(site, base, null, 1)
     }
@@ -1004,11 +1011,27 @@ class MainActivity : Activity() {
     }
 
     private fun appendApiParams(base: String, params: Map<String, String>): String {
-        val separator = if (base.contains("?")) "&" else "?"
-        val encoded = params.entries.joinToString("&") {
-            java.net.URLEncoder.encode(it.key, "UTF-8") + "=" + java.net.URLEncoder.encode(it.value, "UTF-8")
+        // Keep fragments out of the HTTP request and replace existing values for keys
+        // such as ac/pg/t instead of sending duplicate query parameters.
+        val fragmentIndex = base.indexOf('#')
+        val fragment = if (fragmentIndex >= 0) base.substring(fragmentIndex) else ""
+        val address = if (fragmentIndex >= 0) base.substring(0, fragmentIndex) else base
+        val queryIndex = address.indexOf('?')
+        val path = if (queryIndex >= 0) address.substring(0, queryIndex) else address
+        val existingQuery = if (queryIndex >= 0) address.substring(queryIndex + 1) else ""
+        val keysToReplace = params.keys
+        val queryParts = existingQuery.split('&').filter { part ->
+            if (part.isBlank()) false else {
+                val rawKey = part.substringBefore('=')
+                val decodedKey = runCatching { java.net.URLDecoder.decode(rawKey, "UTF-8") }.getOrDefault(rawKey)
+                decodedKey !in keysToReplace
+            }
+        }.toMutableList()
+        queryParts += params.entries.map {
+            java.net.URLEncoder.encode(it.key, "UTF-8") + "=" +
+                java.net.URLEncoder.encode(it.value, "UTF-8")
         }
-        return base + separator + encoded
+        return path + if (queryParts.isEmpty()) fragment else "?" + queryParts.joinToString("&") + fragment
     }
 
     private fun Any?.safeString(fallback: String): String = when (this) {
