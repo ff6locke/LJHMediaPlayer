@@ -712,7 +712,7 @@ class MainActivity : Activity() {
                 val json = runCatching { JSONObject(homeResult) }.getOrElse {
                     throw IllegalStateException("homeContent 返回的不是 JSON 对象：${homeResult.take(240)}；错误：${describeSpiderError(it)}")
                 }
-                Triple(spider, json, spiderClass.name)
+                Triple(spider, json, spiderClass.name + "（" + spiderBootstrap + "）")
             }
             runOnUiThread {
                 val loaded = result.getOrNull()
