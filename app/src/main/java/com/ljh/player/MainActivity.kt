@@ -610,22 +610,104 @@ class MainActivity : Activity() {
                 val optimized = java.io.File(dir, "optimized").apply { mkdirs() }
                 val libs = java.io.File(dir, "libs").apply { mkdirs() }
                 val loader = dalvik.system.DexClassLoader(jarFile.absolutePath, optimized.absolutePath, libs.absolutePath, javaClass.classLoader)
-                val candidates = listOf("com.github.catvod.spider.$classShortName", "com.github.catvod.spider." + classShortName, classShortName)
+                val normalizedName = classShortName.removePrefix("csp_").removePrefix("CSP_").trim()
+                val candidates = listOf(
+                    "com.github.catvod.spider.$normalizedName",
+                    "com.github.catvod.spider.${normalizedName.replaceFirstChar { it.uppercase() }}",
+                    normalizedName,
+                    classShortName
+                ).distinct()
+                val loadErrors = mutableListOf<String>()
                 var loadedClass: Class<*>? = null
-                var lastError: Throwable? = null
-                for (candidate in candidates) { try { loadedClass = loader.loadClass(candidate); break } catch (t: Throwable) { lastError = t } }
-                val spiderClass = loadedClass ?: throw IllegalStateException("JAR 中找不到类 ${candidates.joinToString()}：${lastError?.message ?: ""}")
-                val spider = spiderClass.getDeclaredConstructor().newInstance()
-                val init2 = spiderClass.methods.firstOrNull { it.name == "init" && it.parameterTypes.size == 2 }
-                if (init2 != null) init2.invoke(spider, this@MainActivity, site.ext)
-                else spiderClass.methods.firstOrNull { it.name == "init" && it.parameterTypes.size == 1 }?.invoke(spider, this@MainActivity)
-                val home = spiderClass.methods.firstOrNull { it.name == "homeContent" && it.parameterTypes.size == 1 } ?: error("缺少 homeContent(boolean)，不是兼容的 CatVod Spider")
-                val json = JSONObject(home.invoke(spider, true)?.toString().orEmpty())
+                for (candidate in candidates) {
+                    try {
+                        loadedClass = loader.loadClass(candidate)
+                        break
+                    } catch (t: Throwable) {
+                        loadErrors.add("$candidate -> ${describeSpiderError(t)}")
+                    }
+                }
+                val spiderClass = loadedClass ?: run {
+                    val discovered = runCatching {
+                        java.util.zip.ZipFile(jarFile).use { zip ->
+                            val e = zip.entries()
+                            val names = mutableListOf<String>()
+                            while (e.hasMoreElements()) {
+                                val entry = e.nextElement()
+                                if (entry.name.endsWith(".class") && !entry.name.contains("$")) {
+                                    names.add(entry.name.removeSuffix(".class").replace('/', '.'))
+                                }
+                                if (names.size >= 80) break
+                            }
+                            names.joinToString("\\n").ifBlank { "(未发现普通 .class；可能是 DEX/JAR 格式或非可执行文件)" }
+                        }
+                    }.getOrDefault("(读取 JAR 类清单失败)")
+                    throw IllegalStateException(
+                        "无法加载 Spider 类。尝试类名：${candidates.joinToString()}\\n" +
+                            "类加载错误：${loadErrors.joinToString(" | ")}\\n" +
+                            "JAR 内部类样例：\\n$discovered"
+                    )
+                }
+                val constructor = runCatching { spiderClass.getDeclaredConstructor() }.getOrElse {
+                    throw IllegalStateException("类 ${spiderClass.name} 没有无参构造函数：${describeSpiderError(it)}")
+                }
+                constructor.isAccessible = true
+                val spider = constructor.newInstance()
+                val methods = spiderClass.methods.toList()
+                val initMethods = methods.filter { it.name == "init" }.sortedBy { it.parameterTypes.size }
+                val init2 = initMethods.firstOrNull {
+                    it.parameterTypes.size == 2 &&
+                        it.parameterTypes[0].isAssignableFrom(this@MainActivity.javaClass) &&
+                        (it.parameterTypes[1] == String::class.java || it.parameterTypes[1] == JSONObject::class.java ||
+                            java.util.Map::class.java.isAssignableFrom(it.parameterTypes[1]))
+                }
+                val init1 = initMethods.firstOrNull {
+                    it.parameterTypes.size == 1 && it.parameterTypes[0].isAssignableFrom(this@MainActivity.javaClass)
+                }
+                when {
+                    init2 != null -> {
+                        val second = when (init2.parameterTypes[1]) {
+                            String::class.java -> site.ext
+                            JSONObject::class.java -> runCatching { JSONObject(site.ext.ifBlank { "{}" }) }.getOrElse { JSONObject() }
+                            else -> runCatching {
+                                val obj = JSONObject(site.ext.ifBlank { "{}" })
+                                HashMap<String, String>().apply {
+                                    val keys = obj.keys()
+                                    while (keys.hasNext()) {
+                                        val key = keys.next()
+                                        put(key, obj.opt(key).safeString(""))
+                                    }
+                                }
+                            }.getOrElse { HashMap<String, String>() }
+                        }
+                        invokeSpiderMethod(init2, spider, this@MainActivity, second)
+                    }
+                    init1 != null -> invokeSpiderMethod(init1, spider, this@MainActivity)
+                    initMethods.isNotEmpty() -> throw IllegalStateException(
+                        "发现 init 方法，但参数不兼容：${initMethods.joinToString { m -> m.parameterTypes.joinToString(prefix = "init(", postfix = ")") { it.simpleName } }}"
+                    )
+                }
+                val home = methods.firstOrNull {
+                    it.name == "homeContent" && it.parameterTypes.size == 1 &&
+                        (it.parameterTypes[0] == Boolean::class.javaPrimitiveType || it.parameterTypes[0] == Boolean::class.java)
+                } ?: throw IllegalStateException(
+                    "类 ${spiderClass.name} 缺少 homeContent(boolean)。可用方法：${methods.filter { it.name in listOf("init", "homeContent", "categoryContent", "detailContent", "playerContent") }.joinToString { m -> m.name + "(" + m.parameterTypes.joinToString { it.simpleName } + ")" }.ifBlank { "(未找到常见 Spider 方法)" }}"
+                )
+                val homeResult = invokeSpiderMethod(home, spider, true)?.toString().orEmpty()
+                if (homeResult.isBlank()) throw IllegalStateException("homeContent(true) 返回空内容")
+                val json = runCatching { JSONObject(homeResult) }.getOrElse {
+                    throw IllegalStateException("homeContent 返回的不是 JSON 对象：${homeResult.take(240)}；错误：${describeSpiderError(it)}")
+                }
                 Triple(spider, json, spiderClass.name)
             }
             runOnUiThread {
                 val loaded = result.getOrNull()
-                if (loaded == null) { output.text = "Spider 启动失败：${result.exceptionOrNull()?.cause?.message ?: result.exceptionOrNull()?.message ?: "未知错误"}\n\n可能是类名、基类 ABI、依赖或初始化方式不兼容。"; showStatus("Spider 启动失败"); return@runOnUiThread }
+                if (loaded == null) {
+                    val failure = result.exceptionOrNull()
+                    output.text = "Spider 启动失败：\\n${failure?.let { describeSpiderError(it) } ?: "未捕获到异常对象"}\\n\\n请检查下方具体异常中的类名、缺失依赖、初始化参数或 Spider ABI。"
+                    showStatus("Spider 启动失败（已输出详细原因）")
+                    return@runOnUiThread
+                }
                 val spider = loaded.first
                 val json = loaded.second
                 output.text = "Spider：${loaded.third}\n分类：${json.optJSONArray("class")?.length() ?: 0}\n影片：${json.optJSONArray("list")?.length() ?: 0}"
@@ -641,6 +723,29 @@ class MainActivity : Activity() {
                 showStatus("Spider 已初始化")
             }
         }
+    }
+
+    private fun invokeSpiderMethod(method: java.lang.reflect.Method, receiver: Any, vararg args: Any?): Any? {
+        return try {
+            method.invoke(receiver, *args)
+        } catch (e: java.lang.reflect.InvocationTargetException) {
+            throw e.targetException ?: e
+        }
+    }
+
+    private fun describeSpiderError(error: Throwable): String {
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+        val parts = mutableListOf<String>()
+        var current: Throwable? = error
+        while (current != null && seen.add(current) && parts.size < 8) {
+            val message = current.message?.takeIf { it.isNotBlank() } ?: "(无消息)"
+            parts.add("${current.javaClass.name}: $message")
+            current = when (current) {
+                is java.lang.reflect.InvocationTargetException -> current.targetException ?: current.cause
+                else -> current.cause
+            }
+        }
+        return parts.joinToString("\\nCaused by: ")
     }
 
     private fun loadSpiderCategory(spider: Any, site: SiteInfo, categoryId: String) {
