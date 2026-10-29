@@ -1085,20 +1085,38 @@ class MainActivity : Activity() {
                         itemList.removeAllViews()
                         detail.third.forEachIndexed { selectedIndex, selectedEpisode ->
                             itemList.addView(actionButton("${selectedEpisode.first} · ${selectedEpisode.second}") {
-                                showStatus("正在解析剧集播放地址…")
-                                output.text = "影片：${detail.first}\n正在解析 ${detail.third.size} 集，以便支持上一集/下一集。"
+                                showStatus("正在解析播放地址…")
+                                output.text = "影片：${detail.first}\n正在准备第 ${selectedIndex + 1} 集。"
                                 executor.execute {
                                     val playlistResult = runCatching {
                                         val playerMethod = spider.javaClass.methods.firstOrNull { it.name == "playerContent" && it.parameterTypes.size == 3 } ?: error("缺少 playerContent 方法")
+                                        fun resolveEpisode(episode: Triple<String, String, String>, strict: Boolean): JSONObject {
+                                            val rawUrl = episode.third.trim()
+                                            val resolved = runCatching {
+                                                JSONObject(invokeSpiderMethod(playerMethod, spider, episode.first, rawUrl, emptyList<String>())?.toString().orEmpty())
+                                            }.getOrNull()
+                                            val parse = resolved?.opt("parse").safeString("")
+                                            val url = resolved?.opt("url").safeString(rawUrl).trim()
+                                            if (strict && parse.isNotBlank() && parse != "0") error("当前剧集需要外部解析器（parse=$parse），尚不能直接播放")
+                                            val finalUrl = if (url.startsWith("http://", true) || url.startsWith("https://", true)) url else rawUrl
+                                            if (!finalUrl.startsWith("http://", true) && !finalUrl.startsWith("https://", true)) error("无效播放地址：$finalUrl")
+                                            val headers = resolved?.optJSONObject("header") ?: resolved?.optJSONObject("headers") ?: JSONObject()
+                                            return JSONObject()
+                                                .put("title", "${detail.first} · ${episode.first} · ${episode.second}")
+                                                .put("url", finalUrl)
+                                                .put("headers", headers)
+                                        }
+                                        // The selected episode must resolve successfully. Other episodes are best-effort:
+                                        // one incompatible episode should not prevent the current episode from playing.
+                                        val selected = resolveEpisode(selectedEpisode, true)
                                         val playlist = JSONArray()
-                                        detail.third.forEach { episode ->
-                                            val playJson = JSONObject(invokeSpiderMethod(playerMethod, spider, episode.first, episode.third, emptyList<String>())?.toString().orEmpty())
-                                            val url = playJson.opt("url").safeString(episode.third)
-                                            val parse = playJson.opt("parse").safeString("")
-                                            if (parse.isNotBlank() && parse != "0") error("剧集“${episode.second}”需要外部解析器（parse=$parse）")
-                                            if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) error("剧集“${episode.second}”返回无效播放地址：$url")
-                                            val headers = playJson.optJSONObject("header") ?: playJson.optJSONObject("headers") ?: JSONObject()
-                                            playlist.put(JSONObject().put("title", "${detail.first} · ${episode.first} · ${episode.second}").put("url", url).put("headers", headers))
+                                        detail.third.forEachIndexed { index, episode ->
+                                            val item = if (index == selectedIndex) selected else runCatching { resolveEpisode(episode, false) }
+                                                .getOrElse {
+                                                    JSONObject().put("title", "${detail.first} · ${episode.first} · ${episode.second}")
+                                                        .put("url", episode.third).put("headers", JSONObject())
+                                                }
+                                            playlist.put(item)
                                         }
                                         val file = java.io.File(cacheDir, "spider-playlist-${System.currentTimeMillis()}.json")
                                         file.writeText(playlist.toString(), Charsets.UTF_8)
@@ -1107,8 +1125,8 @@ class MainActivity : Activity() {
                                     runOnUiThread {
                                         val resolved = playlistResult.getOrNull()
                                         if (resolved == null) {
-                                            output.text = "解析播放地址失败：${playlistResult.exceptionOrNull()?.let { describeSpiderError(it) } ?: "未知错误"}"
-                                            showStatus("播放解析失败")
+                                            output.text = "播放地址准备失败：${playlistResult.exceptionOrNull()?.let { describeSpiderError(it) } ?: "未知错误"}"
+                                            showStatus("播放地址准备失败")
                                         } else {
                                             val entry = resolved.second.optJSONObject(selectedIndex) ?: JSONObject()
                                             startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java)
@@ -1118,7 +1136,7 @@ class MainActivity : Activity() {
                                                 .putExtra("playlist_file", resolved.first.absolutePath)
                                                 .putExtra("playlist_index", selectedIndex)
                                                 .putExtra("playlist_label", "剧集"))
-                                            showStatus("正在播放，可切换上一集/下一集")
+                                            showStatus("正在播放；已尽力准备连续剧集")
                                         }
                                     }
                                 }
