@@ -183,7 +183,7 @@ class MainActivity : Activity() {
                     connection.disconnect()
                 }
                 if (code !in 200..399) error("HTTP 状态码：" + code + "；Content-Type：" + contentType)
-                val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+                    val trimmed = body.trim().removePrefix("\uFEFF")
                 if (trimmed.startsWith("<!DOCTYPE", true) || trimmed.startsWith("<html", true)) {
                     error("服务器返回 HTML 网页，不是 JSON 配置。Content-Type：" + contentType)
                 }
