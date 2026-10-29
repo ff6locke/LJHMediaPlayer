@@ -62,7 +62,6 @@ class PlayerActivity : Activity() {
         playlistIndex = intent.getIntExtra("playlist_index", -1)
         if (!url.startsWith("https://", true) && !url.startsWith("http://", true)) {
             message.text = "播放地址无效：\n$url"
-            root.addView(message)
             setContentView(root)
             return
         }
