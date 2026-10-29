@@ -3,7 +3,9 @@ package com.ljh.player
 import android.app.Activity
 import android.os.Bundle
 import android.view.View
+import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
@@ -14,6 +16,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
+import org.json.JSONArray
 import org.json.JSONObject
 import java.util.Locale
 
@@ -21,6 +24,9 @@ class PlayerActivity : Activity() {
     private var player: ExoPlayer? = null
     private lateinit var playerView: PlayerView
     private lateinit var message: TextView
+    private var playlist = JSONArray()
+    private var playlistIndex = -1
+    private var currentTitle = "LJHPlayer"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -48,17 +54,43 @@ class PlayerActivity : Activity() {
             message,
             FrameLayout.LayoutParams(-1, -2, android.view.Gravity.TOP)
         )
-        setContentView(root)
 
         val title = intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: "LJHPlayer"
         val url = intent.getStringExtra("url")?.trim().orEmpty()
-        message.text = title
+        currentTitle = title
+        playlist = runCatching { JSONArray(intent.getStringExtra("playlist").orEmpty()) }.getOrDefault(JSONArray())
+        playlistIndex = intent.getIntExtra("playlist_index", -1)
         if (!url.startsWith("https://", true) && !url.startsWith("http://", true)) {
             message.text = "播放地址无效：\n$url"
+            root.addView(message)
+            setContentView(root)
             return
         }
 
-        val headers = parseHeaders(intent.getStringExtra("headers").orEmpty())
+        if (playlist.length() > 1) {
+            val controls = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                setBackgroundColor(0xAA10141D.toInt())
+                gravity = android.view.Gravity.CENTER
+            }
+            controls.addView(Button(this).apply {
+                text = "上一频道"
+                setOnClickListener { playPlaylistOffset(-1) }
+            })
+            controls.addView(Button(this).apply {
+                text = "下一频道"
+                setOnClickListener { playPlaylistOffset(1) }
+            })
+            root.addView(controls, FrameLayout.LayoutParams(-1, -2, android.view.Gravity.BOTTOM))
+        }
+        setContentView(root)
+        initializePlayer(url, title, parseHeaders(intent.getStringExtra("headers").orEmpty()))
+    }
+
+    private fun initializePlayer(url: String, title: String, headers: Map<String, String>) {
+        currentTitle = title
+        playerView.player = null
+        player?.release()
         val httpFactory = DefaultHttpDataSource.Factory()
             .setUserAgent(headers["User-Agent"] ?: "Mozilla/5.0 (Linux; Android TV) AppleWebKit/537.36 LJHPlayer/0.3")
             .setConnectTimeoutMs(15_000)
@@ -67,42 +99,52 @@ class PlayerActivity : Activity() {
             .setDefaultRequestProperties(headers)
         val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
         val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
-        val exo = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(mediaSourceFactory)
-            .build()
+        val exo = ExoPlayer.Builder(this).setMediaSourceFactory(mediaSourceFactory).build()
         player = exo
         playerView.player = exo
-
+        message.text = "正在缓冲…\n$title"
+        message.visibility = View.VISIBLE
         exo.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
                 val detail = error.cause?.message ?: error.message ?: "媒体格式或网络请求不受支持"
                 message.text = "播放失败（${error.errorCodeName}）\n$detail\n\n请检查播放地址是否为可直接访问的媒体流，以及是否需要 Referer/Cookie 请求头。"
                 message.visibility = View.VISIBLE
             }
-
             override fun onPlaybackStateChanged(playbackState: Int) {
                 when (playbackState) {
                     Player.STATE_BUFFERING -> {
-                        message.text = "正在缓冲…\n$title"
+                        message.text = "正在缓冲…\n$currentTitle"
                         message.visibility = View.VISIBLE
                     }
-                    Player.STATE_READY -> {
-                        message.text = title
-                        message.visibility = View.GONE
-                    }
+                    Player.STATE_READY -> message.visibility = View.GONE
                     Player.STATE_ENDED -> {
-                        message.text = "播放结束\n$title"
+                        message.text = "播放结束\n$currentTitle"
                         message.visibility = View.VISIBLE
                     }
                 }
             }
         })
-
         val mediaItemBuilder = MediaItem.Builder().setUri(url)
         inferMimeType(url)?.let(mediaItemBuilder::setMimeType)
         exo.setMediaItem(mediaItemBuilder.build())
         exo.prepare()
         exo.playWhenReady = true
+    }
+
+    private fun playPlaylistOffset(offset: Int) {
+        if (playlist.length() <= 1 || playlistIndex !in 0 until playlist.length()) return
+        val nextIndex = (playlistIndex + offset + playlist.length()) % playlist.length()
+        val item = playlist.optJSONObject(nextIndex) ?: return
+        val title = item.optString("title", "频道 ${nextIndex + 1}")
+        val url = item.optString("url", "").trim()
+        if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) {
+            message.text = "频道地址无效：\n$url"
+            message.visibility = View.VISIBLE
+            return
+        }
+        playlistIndex = nextIndex
+        val headers = parseHeaders(item.optJSONObject("headers")?.toString().orEmpty())
+        initializePlayer(url, title, headers)
     }
 
     private fun parseHeaders(raw: String): Map<String, String> = runCatching {
