@@ -125,8 +125,14 @@ class PlayerActivity : Activity() {
                     }
                     Player.STATE_READY -> message.visibility = View.GONE
                     Player.STATE_ENDED -> {
-                        message.text = "播放结束\n$currentTitle"
-                        message.visibility = View.VISIBLE
+                        if (playlistIndex in 0 until playlist.length() - 1) {
+                            message.text = "本集播放结束，正在切换下一集…"
+                            message.visibility = View.VISIBLE
+                            playerView.postDelayed({ playPlaylistOffset(1) }, 350)
+                        } else {
+                            message.text = "播放结束\n$currentTitle"
+                            message.visibility = View.VISIBLE
+                        }
                     }
                 }
             }
@@ -140,7 +146,12 @@ class PlayerActivity : Activity() {
 
     private fun playPlaylistOffset(offset: Int) {
         if (playlist.length() <= 1 || playlistIndex !in 0 until playlist.length()) return
-        val nextIndex = (playlistIndex + offset + playlist.length()) % playlist.length()
+        val nextIndex = playlistIndex + offset
+        if (nextIndex !in 0 until playlist.length()) {
+            message.text = if (offset > 0) "已经是最后一集" else "已经是第一集"
+            message.visibility = View.VISIBLE
+            return
+        }
         val item = playlist.optJSONObject(nextIndex) ?: return
         val title = item.optString("title", "频道 ${nextIndex + 1}")
         val url = item.optString("url", "").trim()
