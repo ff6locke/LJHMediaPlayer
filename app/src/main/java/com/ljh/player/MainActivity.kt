@@ -23,6 +23,7 @@ class MainActivity : Activity() {
     private val prefs by lazy { getSharedPreferences("ljhplayer", MODE_PRIVATE) }
     private val executor = Executors.newSingleThreadExecutor()
     private lateinit var sourceInput: EditText
+    private lateinit var mediaUrlInput: EditText
     private lateinit var status: TextView
     private lateinit var output: TextView
     private lateinit var itemList: LinearLayout
@@ -79,6 +80,35 @@ class MainActivity : Activity() {
         buttons.addView(actionButton("加载点播站点") { loadConfig() })
         buttons.addView(actionButton("下载/检查 Spider") { downloadSpiderJar() })
         root.addView(buttons)
+
+        root.addView(TextView(this).apply {
+            text = "直接播放媒体地址（MP4 / M3U8 / MPD）"
+            textSize = 17f
+            setTextColor(0xFF66D9C2.toInt())
+            setPadding(0, 14, 0, 4)
+        })
+        mediaUrlInput = EditText(this).apply {
+            isSingleLine = true
+            textSize = 16f
+            hint = "粘贴可直接访问的 http(s) 视频地址"
+            setTextColor(0xFFFFFFFF.toInt())
+            setHintTextColor(0xFF8B96A9.toInt())
+            setSelectAllOnFocus(true)
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
+        }
+        root.addView(mediaUrlInput, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
+        root.addView(actionButton("播放此地址") {
+            val mediaUrl = mediaUrlInput.text.toString().trim()
+            if (!mediaUrl.startsWith("http://", true) && !mediaUrl.startsWith("https://", true)) {
+                showStatus("请输入有效的 HTTP(S) 媒体地址")
+            } else {
+                startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java)
+                    .putExtra("title", mediaUrl.substringAfterLast('/').substringBefore('?').ifBlank { "网络视频" })
+                    .putExtra("url", mediaUrl))
+                showStatus("正在打开直播放播放器")
+            }
+        })
+
         status = TextView(this).apply {
             text = "默认源已填写。点击“加载点播站点”读取配置。"
             textSize = 15f
