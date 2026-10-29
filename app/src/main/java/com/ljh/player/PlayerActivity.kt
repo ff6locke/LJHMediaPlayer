@@ -113,8 +113,21 @@ class PlayerActivity : Activity() {
         message.visibility = View.VISIBLE
         exo.addListener(object : Player.Listener {
             override fun onPlayerError(error: PlaybackException) {
-                val detail = error.cause?.message ?: error.message ?: "媒体格式或网络请求不受支持"
-                message.text = "播放失败（${error.errorCodeName}）\n$detail\n\n请检查播放地址是否为可直接访问的媒体流，以及是否需要 Referer/Cookie 请求头。"
+                val causes = generateSequence<Throwable>(error) { it.cause }
+                    .take(8)
+                    .map { cause -> "${cause.javaClass.simpleName}: ${cause.message ?: "(无详细信息)"}" }
+                    .distinct()
+                    .joinToString("\n")
+                val hint = when {
+                    causes.contains("UnknownHostException", true) -> "无法解析域名：检查网络或播放链接是否过期。"
+                    causes.contains("SSL", true) || causes.contains("CertPath", true) -> "HTTPS 证书校验失败，检查设备时间或服务器证书。"
+                    causes.contains("403", true) || causes.contains("401", true) -> "服务器拒绝访问：该链接可能需要 Referer、Cookie 或登录。"
+                    causes.contains("404", true) -> "媒体地址不存在或已过期。"
+                    causes.contains("Cleartext HTTP traffic", true) -> "设备阻止了 HTTP 明文请求。"
+                    causes.contains("ParserException", true) || causes.contains("UnrecognizedInputFormatException", true) -> "返回内容可能不是视频流；请使用直链 MP4、M3U8 或 MPD，而不是网页播放页。"
+                    else -> "请确认链接是可直接访问的媒体流，而不是网站播放页面。"
+                }
+                message.text = "播放失败（${error.errorCodeName}）\n$title\n\n${hint}\n\n错误详情：\n${causes.ifBlank { error.message ?: "没有更多错误信息" }}"
                 message.visibility = View.VISIBLE
             }
             override fun onPlaybackStateChanged(playbackState: Int) {
