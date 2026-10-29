@@ -354,8 +354,11 @@ class MainActivity : Activity() {
                                 line.startsWith("#EXTVLCOPT:http-referrer=", true) -> pendingReferer = line.substringAfter('=').trim()
                                 line.startsWith("#EXTVLCOPT:http-user-agent=", true) -> pendingUserAgent = line.substringAfter('=').trim()
                                 line.startsWith("#") || line.isBlank() -> Unit
-                                line.startsWith("http://", true) || line.startsWith("https://", true) -> {
-                                    channels.add(LiveChannel(pendingName.ifBlank { line.substringAfterLast('/').substringBefore('?') }, resolveReference(source.url, line), pendingGroup, pendingReferer, pendingUserAgent))
+                                !line.startsWith("#") -> {
+                                    val resolvedUrl = resolveReference(source.url, line)
+                                    if (resolvedUrl.startsWith("http://", true) || resolvedUrl.startsWith("https://", true)) {
+                                        channels.add(LiveChannel(pendingName.ifBlank { line.substringAfterLast('/').substringBefore('?') }, resolvedUrl, pendingGroup, pendingReferer, pendingUserAgent))
+                                    }
                                     pendingName = ""
                                     pendingReferer = ""
                                     pendingUserAgent = ""
