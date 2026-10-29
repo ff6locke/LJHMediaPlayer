@@ -93,7 +93,7 @@ class MainActivity : Activity() {
                     "接口设置" -> sourceInput.requestFocus()
                     "搜索" -> { showStatus("正在加载可搜索站点…"); loadConfig() }
                     "点播" -> loadConfig()
-                    "直播" -> showStatus("直播列表解析尚未接入；请先验证配置中的 lives 字段或 M3U 地址。")
+                    "直播" -> loadLiveChannels()
                 }
             })
         }
@@ -262,6 +262,157 @@ class MainActivity : Activity() {
         }
     }
 
+
+
+    private fun loadLiveChannels() {
+        val source = currentSource()
+        if (!source.startsWith("http://", true) && !source.startsWith("https://", true)) {
+            showStatus("请先设置有效的 TVBox JSON 地址")
+            return
+        }
+        showStatus("正在读取直播配置…")
+        output.text = "正在读取配置中的 lives 字段和直播源…"
+        itemList.removeAllViews()
+        executor.execute {
+            val result = runCatching {
+                val (code, body) = getText(source)
+                if (code !in 200..399) error("配置请求 HTTP $code")
+                val root = JSONObject(body.trim().removePrefix("\uFEFF"))
+                val lives = root.optJSONArray("lives") ?: JSONArray()
+                if (lives.length() == 0) error("配置中没有 lives 数组；请换用包含直播配置的 TVBox JSON")
+                (0 until lives.length()).mapNotNull { index ->
+                    val item = lives.optJSONObject(index)
+                    when {
+                        item != null -> LiveSource(
+                            name = item.optString("name", "直播源 ${index + 1}"),
+                            url = resolveReference(source, item.optString("url", "")),
+                            inlineChannels = item.optJSONArray("channels")
+                        )
+                        lives.opt(index) is String -> LiveSource(
+                            name = "直播源 ${index + 1}",
+                            url = resolveReference(source, lives.optString(index)),
+                            inlineChannels = null
+                        )
+                        else -> null
+                    }
+                }
+            }
+            runOnUiThread {
+                val sources = result.getOrNull()
+                if (sources == null) {
+                    output.text = "直播配置读取失败：${result.exceptionOrNull()?.message ?: "未知错误"}\n\n支持 TVBox 配置中的 lives 数组和远程 M3U 地址。"
+                    showStatus("未能读取直播源")
+                    return@runOnUiThread
+                }
+                output.text = "找到 ${sources.size} 个直播源。选择一个源加载频道。"
+                sources.forEach { live ->
+                    itemList.addView(actionButton(live.name) { openLiveSource(live) })
+                }
+                showStatus("直播源读取完成")
+            }
+        }
+    }
+
+    private fun openLiveSource(source: LiveSource) {
+        showStatus("正在加载直播源：${source.name}")
+        output.text = "直播源：${source.name}\n${source.url.ifBlank { "内嵌频道" }}"
+        itemList.removeAllViews()
+        executor.execute {
+            val result = runCatching {
+                val channels = mutableListOf<LiveChannel>()
+                val inline = source.inlineChannels
+                if (inline != null) {
+                    for (i in 0 until inline.length()) {
+                        val item = inline.optJSONObject(i) ?: continue
+                        val name = item.optString("name", item.optString("title", "频道 ${i + 1}"))
+                        val urlValue = item.opt("url") ?: item.opt("urls")
+                        val url = when (urlValue) {
+                            is JSONArray -> urlValue.optString(0, "")
+                            else -> urlValue?.toString().orEmpty()
+                        }.substringBefore("|||").trim()
+                        if (url.startsWith("http://", true) || url.startsWith("https://", true)) {
+                            channels.add(LiveChannel(name, url, item.optString("group", item.optString("group-title", "直播"))))
+                        }
+                    }
+                }
+                if (channels.isEmpty() && source.url.isNotBlank()) {
+                    val (code, body) = getText(source.url)
+                    if (code !in 200..399) error("直播源 HTTP $code")
+                    val trimmed = body.trimStart('\\uFEFF', ' ', '\\n', '\\r', '\\t')
+                    if (trimmed.startsWith("#EXTM3U", true) || trimmed.contains("#EXTINF", true)) {
+                        var pendingName = ""
+                        var pendingGroup = "直播"
+                        var pendingReferer = ""
+                        body.lineSequence().forEach { rawLine ->
+                            val line = rawLine.trim()
+                            when {
+                                line.startsWith("#EXTINF", true) -> {
+                                    pendingName = line.substringAfter(',', "").trim().ifBlank { "未命名频道" }
+                                    pendingGroup = Regex("group-title=\"([^\"]*)\"").find(line)?.groupValues?.get(1)?.ifBlank { "直播" } ?: "直播"
+                                }
+                                line.startsWith("#EXTVLCOPT:http-referrer=", true) -> pendingReferer = line.substringAfter('=').trim()
+                                line.startsWith("#EXTVLCOPT:http-user-agent=", true) -> Unit
+                                line.startsWith("#") || line.isBlank() -> Unit
+                                line.startsWith("http://", true) || line.startsWith("https://", true) -> {
+                                    channels.add(LiveChannel(pendingName.ifBlank { line.substringAfterLast('/').substringBefore('?') }, line, pendingGroup, pendingReferer))
+                                    pendingName = ""
+                                    pendingReferer = ""
+                                }
+                            }
+                        }
+                    } else {
+                        val json = JSONObject(trimmed)
+                        val array = json.optJSONArray("channels") ?: json.optJSONArray("data") ?: json.optJSONArray("lives")
+                            ?: error("直播源不是 M3U，且 JSON 中没有 channels/data/lives 数组")
+                        for (i in 0 until array.length()) {
+                            val item = array.optJSONObject(i) ?: continue
+                            val name = item.optString("name", item.optString("title", "频道 ${i + 1}"))
+                            val rawUrl = item.opt("url") ?: item.opt("play")
+                            val url = when (rawUrl) {
+                                is JSONArray -> rawUrl.optString(0, "")
+                                else -> rawUrl?.toString().orEmpty()
+                            }.trim()
+                            if (url.startsWith("http://", true) || url.startsWith("https://", true)) {
+                                channels.add(LiveChannel(name, url, item.optString("group", item.optString("group-title", "直播"))))
+                            }
+                        }
+                    }
+                }
+                if (channels.isEmpty()) error("直播源已读取，但没有找到可播放的 HTTP(S) 频道")
+                channels
+            }
+            runOnUiThread {
+                val channels = result.getOrNull()
+                if (channels == null) {
+                    output.text = "直播源加载失败：${result.exceptionOrNull()?.message ?: "未知错误"}"
+                    showStatus("直播频道加载失败")
+                    return@runOnUiThread
+                }
+                val groups = channels.groupBy { it.group.ifBlank { "直播" } }
+                output.text = "直播源：${source.name}\n频道：${channels.size} 个\n分组：${groups.size} 个"
+                itemList.addView(actionButton("返回直播源列表") { loadLiveChannels() })
+                groups.forEach { (group, entries) ->
+                    itemList.addView(TextView(this).apply {
+                        text = "$group（${entries.size}）"
+                        textSize = 18f
+                        setTextColor(0xFF66D9C2.toInt())
+                        setPadding(4, 12, 4, 4)
+                    })
+                    entries.forEach { channel ->
+                        itemList.addView(actionButton(channel.name) {
+                            val headers = JSONObject()
+                            if (channel.referer.isNotBlank()) headers.put("Referer", channel.referer)
+                            startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java)
+                                .putExtra("title", channel.name)
+                                .putExtra("url", channel.url)
+                                .putExtra("headers", headers.toString()))
+                        })
+                    }
+                }
+                showStatus("直播频道已加载")
+            }
+        }
+    }
 
     private fun downloadSpiderJar(urlOverride: String? = null, fileName: String = "spider.jar", expectedClass: String? = null) {
         val spiderUrl = urlOverride?.takeIf { it.isNotBlank() } ?: currentSpiderUrl
@@ -591,7 +742,9 @@ class MainActivity : Activity() {
                 val dir = java.io.File(filesDir, "spider").apply { mkdirs() }
                 val safeName = site.name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40).ifBlank { "site" }
                 val jarFile = java.io.File(dir, "$safeName.jar")
-                if (!jarFile.isFile || jarFile.length() < 4) {
+                // Refresh the downloaded plugin on each explicit run so updated JAR content
+                // is not silently shadowed by a stale per-site cache.
+                run {
                     val connection = openConnection(jarUrl)
                     try {
                         val code = connection.responseCode
@@ -863,6 +1016,9 @@ class MainActivity : Activity() {
         is Boolean -> if (this) 1 else 0
         else -> fallback
     }
+
+    private data class LiveSource(val name: String, val url: String, val inlineChannels: JSONArray?)
+    private data class LiveChannel(val name: String, val url: String, val group: String = "直播", val referer: String = "")
 
     private data class VodCategory(val id: String, val name: String)
 
