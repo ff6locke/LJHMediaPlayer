@@ -634,18 +634,18 @@ class MainActivity : Activity() {
                             val names = mutableListOf<String>()
                             while (e.hasMoreElements()) {
                                 val entry = e.nextElement()
-                                if (entry.name.endsWith(".class") && !entry.name.contains("$")) {
+                                if (entry.name.endsWith(".class") && !entry.name.contains("\\$")) {
                                     names.add(entry.name.removeSuffix(".class").replace('/', '.'))
                                 }
                                 if (names.size >= 80) break
                             }
-                            names.joinToString("\\n").ifBlank { "(未发现普通 .class；可能是 DEX/JAR 格式或非可执行文件)" }
+                            names.joinToString("\n").ifBlank { "(未发现普通 .class；可能是 DEX/JAR 格式或非可执行文件)" }
                         }
                     }.getOrDefault("(读取 JAR 类清单失败)")
                     throw IllegalStateException(
-                        "无法加载 Spider 类。尝试类名：${candidates.joinToString()}\\n" +
-                            "类加载错误：${loadErrors.joinToString(" | ")}\\n" +
-                            "JAR 内部类样例：\\n$discovered"
+                        "无法加载 Spider 类。尝试类名：${candidates.joinToString()}\n" +
+                            "类加载错误：${loadErrors.joinToString(" | ")}\n" +
+                            "JAR 内部类样例：\n$discovered"
                     )
                 }
                 val constructor = runCatching { spiderClass.getDeclaredConstructor() }.getOrElse {
@@ -704,7 +704,7 @@ class MainActivity : Activity() {
                 val loaded = result.getOrNull()
                 if (loaded == null) {
                     val failure = result.exceptionOrNull()
-                    output.text = "Spider 启动失败：\\n${failure?.let { describeSpiderError(it) } ?: "未捕获到异常对象"}\\n\\n请检查下方具体异常中的类名、缺失依赖、初始化参数或 Spider ABI。"
+                    output.text = "Spider 启动失败：\n${failure?.let { describeSpiderError(it) } ?: "未捕获到异常对象"}\n\n请检查下方具体异常中的类名、缺失依赖、初始化参数或 Spider ABI。"
                     showStatus("Spider 启动失败（已输出详细原因）")
                     return@runOnUiThread
                 }
@@ -745,7 +745,7 @@ class MainActivity : Activity() {
                 else -> current.cause
             }
         }
-        return parts.joinToString("\\nCaused by: ")
+        return parts.joinToString("\nCaused by: ")
     }
 
     private fun loadSpiderCategory(spider: Any, site: SiteInfo, categoryId: String) {
