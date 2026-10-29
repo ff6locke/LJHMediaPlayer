@@ -818,6 +818,65 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun downloadSpiderArchive(address: String, destination: java.io.File): java.io.File {
+        val connection = openConnection(address)
+        try {
+            val code = connection.responseCode
+            if (code !in 200..299) error("Spider JAR 下载 HTTP $code：$address")
+            if (connection.contentLengthLong > 80L * 1024 * 1024) error("Spider JAR 超过 80 MiB 限制")
+            val tmp = java.io.File(destination.parentFile, destination.name + ".tmp")
+            connection.inputStream.use { input ->
+                tmp.outputStream().buffered().use { out ->
+                    val buffer = ByteArray(8192)
+                    var total = 0L
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        total += count
+                        if (total > 80L * 1024 * 1024) error("Spider JAR 超过 80 MiB 限制")
+                        out.write(buffer, 0, count)
+                    }
+                }
+            }
+            java.util.zip.ZipFile(tmp).use { zip ->
+                if (!zip.entries().hasMoreElements()) error("下载内容不是有效 JAR/ZIP：$address")
+            }
+            if (!tmp.renameTo(destination)) {
+                tmp.copyTo(destination, overwrite = true)
+                tmp.delete()
+            }
+            return destination
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    /**
+     * Guarded CatVod Spider providers may rely on JNI libraries packaged inside their
+     * JAR. DexClassLoader only searches its nativeLibraryPath; unpack matching Android
+     * ABI libraries there before initializing the provider.
+     */
+    private fun extractSpiderNativeLibraries(jars: List<java.io.File>, destination: java.io.File) {
+        val supportedAbis = android.os.Build.SUPPORTED_ABIS.toList()
+        jars.forEach { jar ->
+            java.util.zip.ZipFile(jar).use { zip ->
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val entry = entries.nextElement()
+                    if (entry.isDirectory || !entry.name.endsWith(".so")) continue
+                    val normalized = entry.name.replace('\\', '/')
+                    val abi = supportedAbis.firstOrNull { normalized.contains("lib/$it/") } ?: continue
+                    val libraryName = normalized.substringAfter("lib/$abi/").substringAfterLast('/')
+                    if (!libraryName.startsWith("lib") || libraryName.isBlank()) continue
+                    val output = java.io.File(destination, libraryName)
+                    zip.getInputStream(entry).use { input ->
+                        output.outputStream().buffered().use { out -> input.copyTo(out) }
+                    }
+                }
+            }
+        }
+    }
+
     private fun runSpiderSite(site: SiteInfo, jarUrl: String, classShortName: String) {
         showStatus("正在准备 Spider 插件…")
         output.text = "站点：${site.name}\n正在下载并初始化插件。仅运行你信任的第三方 JAR。"
@@ -826,28 +885,20 @@ class MainActivity : Activity() {
             val result = runCatching {
                 val dir = java.io.File(filesDir, "spider").apply { mkdirs() }
                 val safeName = site.name.replace(Regex("[^A-Za-z0-9._-]"), "_").take(40).ifBlank { "site" }
-                val jarFile = java.io.File(dir, "$safeName.jar")
-                // Refresh the downloaded plugin on each explicit run so updated JAR content
-                // is not silently shadowed by a stale per-site cache.
-                run {
-                    val connection = openConnection(jarUrl)
-                    try {
-                        val code = connection.responseCode
-                        if (code !in 200..299) error("JAR 下载 HTTP $code")
-                        if (connection.contentLengthLong > 80L * 1024 * 1024) error("JAR 超过 80 MiB 限制")
-                        val tmp = java.io.File(dir, "$safeName.jar.tmp")
-                        connection.inputStream.use { input -> tmp.outputStream().buffered().use { out ->
-                            val buffer = ByteArray(8192)
-                            var total = 0L
-                            while (true) { val n = input.read(buffer); if (n < 0) break; total += n; if (total > 80L * 1024 * 1024) error("JAR 超过 80 MiB 限制"); out.write(buffer, 0, n) }
-                        } }
-                        java.util.zip.ZipFile(tmp).use { zip -> if (!zip.entries().hasMoreElements()) error("下载内容不是有效 JAR/ZIP") }
-                        if (!tmp.renameTo(jarFile)) { tmp.copyTo(jarFile, overwrite = true); tmp.delete() }
-                    } finally { connection.disconnect() }
+                // TVBox configs may specify a site-specific jar while keeping the shared
+                // CatVod runtime in the top-level "spider" field. Load both archives; the
+                // site jar is first so its provider implementation takes precedence.
+                val archiveUrls = listOf(jarUrl, currentSpiderUrl).filter { it.isNotBlank() }.distinct()
+                val jarFiles = archiveUrls.mapIndexed { index, address ->
+                    val jarName = if (index == 0) "$safeName-site.jar" else "shared-spider.jar"
+                    downloadSpiderArchive(address, java.io.File(dir, jarName))
                 }
+                if (jarFiles.isEmpty()) error("配置中没有可用的 Spider JAR 地址")
                 val optimized = java.io.File(dir, "optimized").apply { mkdirs() }
                 val libs = java.io.File(dir, "libs").apply { mkdirs() }
-                val loader = dalvik.system.DexClassLoader(jarFile.absolutePath, optimized.absolutePath, libs.absolutePath, javaClass.classLoader)
+                extractSpiderNativeLibraries(jarFiles, libs)
+                val dexPath = jarFiles.joinToString(java.io.File.pathSeparator) { it.absolutePath }
+                val loader = dalvik.system.DexClassLoader(dexPath, optimized.absolutePath, libs.absolutePath, javaClass.classLoader)
 
                 // Match the CatVod/OKTV host bootstrap sequence: initialize the Spider runtime
                 // from the downloaded JAR before loading a guarded Spider class. Some guarded
