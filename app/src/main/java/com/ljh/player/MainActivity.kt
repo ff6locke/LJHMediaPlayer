@@ -1083,24 +1083,47 @@ class MainActivity : Activity() {
                         if (detail == null) { output.text = "详情失败：${result.exceptionOrNull()?.cause?.message ?: result.exceptionOrNull()?.message}"; showStatus("详情加载失败"); return@runOnUiThread }
                         output.text = "影片：${detail.first}\n简介：${detail.second.take(400)}\n剧集：${detail.third.size}"
                         itemList.removeAllViews()
-                        detail.third.forEach { ep -> itemList.addView(actionButton("${ep.first} · ${ep.second}") {
-                            executor.execute {
-                                val playResult = runCatching {
-                                    val method = spider.javaClass.methods.firstOrNull { it.name == "playerContent" && it.parameterTypes.size == 3 } ?: error("缺少 playerContent 方法")
-                                    val playJson = JSONObject(invokeSpiderMethod(method, spider, ep.first, ep.third, emptyList<String>())?.toString().orEmpty())
-                                    val url = playJson.opt("url").safeString(ep.third)
-                                    if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) error("无效播放地址：$url")
-                                    val headers = playJson.optJSONObject("header") ?: playJson.optJSONObject("headers") ?: JSONObject()
-                                    Triple(url, headers.toString(), playJson.opt("parse").safeString(""))
+                        detail.third.forEachIndexed { selectedIndex, selectedEpisode ->
+                            itemList.addView(actionButton("${selectedEpisode.first} · ${selectedEpisode.second}") {
+                                showStatus("正在解析剧集播放地址…")
+                                output.text = "影片：${detail.first}\n正在解析 ${detail.third.size} 集，以便支持上一集/下一集。"
+                                executor.execute {
+                                    val playlistResult = runCatching {
+                                        val playerMethod = spider.javaClass.methods.firstOrNull { it.name == "playerContent" && it.parameterTypes.size == 3 } ?: error("缺少 playerContent 方法")
+                                        val playlist = JSONArray()
+                                        detail.third.forEach { episode ->
+                                            val playJson = JSONObject(invokeSpiderMethod(playerMethod, spider, episode.first, episode.third, emptyList<String>())?.toString().orEmpty())
+                                            val url = playJson.opt("url").safeString(episode.third)
+                                            val parse = playJson.opt("parse").safeString("")
+                                            if (parse.isNotBlank() && parse != "0") error("剧集“${episode.second}”需要外部解析器（parse=$parse）")
+                                            if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) error("剧集“${episode.second}”返回无效播放地址：$url")
+                                            val headers = playJson.optJSONObject("header") ?: playJson.optJSONObject("headers") ?: JSONObject()
+                                            playlist.put(JSONObject().put("title", "${detail.first} · ${episode.first} · ${episode.second}").put("url", url).put("headers", headers))
+                                        }
+                                        val file = java.io.File(cacheDir, "spider-playlist-${System.currentTimeMillis()}.json")
+                                        file.writeText(playlist.toString(), Charsets.UTF_8)
+                                        file to playlist
+                                    }
+                                    runOnUiThread {
+                                        val resolved = playlistResult.getOrNull()
+                                        if (resolved == null) {
+                                            output.text = "解析播放地址失败：${playlistResult.exceptionOrNull()?.let { describeSpiderError(it) } ?: "未知错误"}"
+                                            showStatus("播放解析失败")
+                                        } else {
+                                            val entry = resolved.second.optJSONObject(selectedIndex) ?: JSONObject()
+                                            startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java)
+                                                .putExtra("title", entry.optString("title", "${detail.first} · ${selectedEpisode.second}"))
+                                                .putExtra("url", entry.optString("url", selectedEpisode.third))
+                                                .putExtra("headers", entry.optJSONObject("headers")?.toString() ?: "{}")
+                                                .putExtra("playlist_file", resolved.first.absolutePath)
+                                                .putExtra("playlist_index", selectedIndex)
+                                                .putExtra("playlist_label", "剧集"))
+                                            showStatus("正在播放，可切换上一集/下一集")
+                                        }
+                                    }
                                 }
-                                runOnUiThread {
-                                    val playback = playResult.getOrNull()
-                                    if (playback == null) { output.text = "解析播放地址失败：${playResult.exceptionOrNull()?.cause?.message ?: playResult.exceptionOrNull()?.message}"; showStatus("播放解析失败") }
-                                    else if (playback.third.isNotBlank() && playback.third != "0") { output.text = "该 Spider 返回了需要额外解析器的播放标记：${playback.third}\n当前播放器仅支持 Spider 已返回的直链或可直接播放的媒体地址。"; showStatus("需要外部解析器") }
-                                    else { startActivity(android.content.Intent(this@MainActivity, PlayerActivity::class.java).putExtra("title", "${detail.first} · ${ep.second}").putExtra("url", playback.first).putExtra("headers", playback.second)); showStatus("正在播放") }
-                                }
-                            }
-                        }) }
+                            })
+                        }
                         showStatus("已解析剧集")
                     }
                 }
