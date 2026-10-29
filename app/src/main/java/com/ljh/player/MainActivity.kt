@@ -738,11 +738,13 @@ class MainActivity : Activity() {
         val parts = mutableListOf<String>()
         var current: Throwable? = error
         while (current != null && seen.add(current) && parts.size < 8) {
-            val message = current.message?.takeIf { it.isNotBlank() } ?: "(无消息)"
-            parts.add("${current.javaClass.name}: $message")
-            current = when (current) {
-                is java.lang.reflect.InvocationTargetException -> current.targetException ?: current.cause
-                else -> current.cause
+            val node = current
+            val message = node.message?.takeIf { it.isNotBlank() } ?: "(无消息)"
+            val frames = node.stackTrace.take(10).joinToString("\n") { "    at $it" }
+            parts.add("${node.javaClass.name}: $message" + if (frames.isNotBlank()) "\n$frames" else "")
+            current = when (node) {
+                is java.lang.reflect.InvocationTargetException -> node.targetException ?: node.cause
+                else -> node.cause
             }
         }
         return parts.joinToString("\nCaused by: ")
