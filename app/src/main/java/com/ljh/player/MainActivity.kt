@@ -706,9 +706,9 @@ class MainActivity : Activity() {
                     val failure = result.exceptionOrNull()
                     val details = failure?.let { describeSpiderError(it) } ?: "未捕获到异常对象"
                     val guardHint = if (details.contains("com.github.catvod.spider.DexNative") && details.contains("YGPGuard")) {
-                        "\\n\\n诊断结论：检测到 YGPGuard 在 DexNative 静态初始化阶段失败。此类加固 Spider 通常依赖与其匹配的 CatVod/TVBox 宿主运行时、加固资源或原生库；当前应用的通用 DexClassLoader 不能保证兼容。请优先换用未加固且兼容 CatVod Spider ABI 的 JAR，或集成该 JAR 对应版本的官方宿主运行时。仅修改站点 api/ext 通常无法修复此错误。"
+                        "\n\n诊断结论：检测到 YGPGuard 在 DexNative 静态初始化阶段失败。此类加固 Spider 通常依赖与其匹配的 CatVod/TVBox 宿主运行时、加固资源或原生库；当前应用的通用 DexClassLoader 不能保证兼容。请优先换用未加固且兼容 CatVod Spider ABI 的 JAR，或集成该 JAR 对应版本的官方宿主运行时。仅修改站点 api/ext 通常无法修复此错误。"
                     } else ""
-                    output.text = "Spider 启动失败：\\n$details$guardHint\\n\\n请检查异常中的类名、依赖、初始化参数或 Spider ABI。"
+                    output.text = "Spider 启动失败：\n$details$guardHint\n\n请检查异常中的类名、依赖、初始化参数或 Spider ABI。"
                     showStatus("Spider 启动失败（已输出诊断建议）")
                     return@runOnUiThread
                 }
