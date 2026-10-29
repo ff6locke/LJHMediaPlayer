@@ -786,18 +786,26 @@ class MainActivity : Activity() {
                 output.text = "影片：${detail.first}\n简介：${detail.second.take(500)}\n可播放集数：${detail.third.size}"
                 val episodePlaylist = JSONArray()
                 detail.third.forEach { episode ->
+                    val parsed = parseTvBoxPlaybackEntry(episode.second)
                     episodePlaylist.put(JSONObject()
                         .put("title", "${detail.first} · ${episode.first}")
-                        .put("url", episode.second)
-                        .put("headers", JSONObject()))
+                        .put("url", parsed.first)
+                        .put("headers", parsed.second))
                 }
                 val episodePlaylistFile = java.io.File(cacheDir, "vod-playlist.json")
                 episodePlaylistFile.writeText(episodePlaylist.toString(), Charsets.UTF_8)
                 detail.third.forEachIndexed { index, episode ->
                     itemList.addView(actionButton(episode.first) {
+                        val parsed = parseTvBoxPlaybackEntry(episode.second)
+                        if (!parsed.first.startsWith("http://", true) && !parsed.first.startsWith("https://", true)) {
+                            output.text = "播放地址格式不受支持：\n${episode.second.take(300)}"
+                            showStatus("播放地址无效")
+                            return@actionButton
+                        }
                         val intent = android.content.Intent(this, PlayerActivity::class.java)
                         intent.putExtra("title", "${detail.first} · ${episode.first}")
-                        intent.putExtra("url", episode.second)
+                        intent.putExtra("url", parsed.first)
+                        intent.putExtra("headers", parsed.second.toString())
                         intent.putExtra("playlist_file", episodePlaylistFile.absolutePath)
                         intent.putExtra("playlist_index", index)
                         intent.putExtra("playlist_label", "集数")
@@ -1177,6 +1185,26 @@ class MainActivity : Activity() {
                 }
             })
         }
+    }
+
+    /**
+     * TVBox CMS commonly appends request headers to a play URL as:
+     * https://host/video.m3u8|||{"Referer":"https://host/","User-Agent":"..."}
+     * Passing the entire value to ExoPlayer makes it treat the header suffix as part of
+     * the URL, so playback fails before useful diagnostics can be shown.
+     */
+    private fun parseTvBoxPlaybackEntry(raw: String): Pair<String, JSONObject> {
+        val value = raw.trim()
+        val separator = value.indexOf("|||")
+        if (separator < 0) return value to JSONObject()
+        val mediaUrl = value.substring(0, separator).trim()
+        val headerText = value.substring(separator + 3).trim()
+        val headers = runCatching { JSONObject(headerText) }.getOrElse {
+            // Some sources URL-encode the JSON suffix.
+            runCatching { JSONObject(java.net.URLDecoder.decode(headerText, "UTF-8")) }
+                .getOrElse { JSONObject() }
+        }
+        return mediaUrl to headers
     }
 
     private fun resolveReference(baseUrl: String, reference: String): String {
