@@ -1001,7 +1001,10 @@ class MainActivity : Activity() {
                 val json = runCatching { JSONObject(homeResult) }.getOrElse {
                     throw IllegalStateException("homeContent 返回的不是 JSON 对象：${homeResult.take(240)}；错误：${describeSpiderError(it)}")
                 }
-                Triple(spider, json, spiderClass.name + "（" + spiderBootstrap + "）")
+                // Some Spider implementations wrap the CatVod payload in a top-level
+                // "data" object. Normalize it once so the category/movie UI can see it.
+                val payload = json.optJSONObject("data") ?: json
+                Triple(spider, payload, spiderClass.name + "（" + spiderBootstrap + "）")
             }
             runOnUiThread {
                 val loaded = result.getOrNull()
@@ -1104,7 +1107,7 @@ class MainActivity : Activity() {
                 val json = JSONObject(response)
                 val data = json.optJSONObject("data") ?: json
                 val videos = data.optJSONArray("list") ?: json.optJSONArray("list") ?: JSONArray()
-                json to videos
+                data to videos
             }
             runOnUiThread {
                 val value = result.getOrNull()
@@ -1129,7 +1132,8 @@ class MainActivity : Activity() {
             val result = runCatching {
                 val method = spider.javaClass.methods.firstOrNull { it.name == "categoryContent" && it.parameterTypes.size == 4 } ?: error("缺少 categoryContent 方法")
                 val extend = runCatching { JSONObject(site.ext).let { obj -> HashMap<String, String>().apply { obj.keys().forEach { key -> put(key, obj.opt(key).safeString("")) } } } }.getOrElse { HashMap() }
-                JSONObject(invokeSpiderMethod(method, spider, categoryId, page.toString(), true, extend)?.toString().orEmpty())
+                val raw = JSONObject(invokeSpiderMethod(method, spider, categoryId, page.toString(), true, extend)?.toString().orEmpty())
+                raw.optJSONObject("data") ?: raw
             }
             runOnUiThread {
                 val json = result.getOrNull()
@@ -1159,7 +1163,8 @@ class MainActivity : Activity() {
                 executor.execute {
                     val result = runCatching {
                         val method = spider.javaClass.methods.firstOrNull { it.name == "detailContent" && it.parameterTypes.size == 1 } ?: error("缺少 detailContent 方法")
-                        val detailJson = JSONObject(invokeSpiderMethod(method, spider, listOf(id))?.toString().orEmpty())
+                        val detailRaw = JSONObject(invokeSpiderMethod(method, spider, listOf(id))?.toString().orEmpty())
+                        val detailJson = detailRaw.optJSONObject("data") ?: detailRaw
                         val detail = detailJson.optJSONArray("list")?.optJSONObject(0) ?: detailJson.optJSONObject("vod") ?: error("详情中没有影片")
                         val flags = detail.opt("vod_play_from").safeString("").split("$" + "$" + "$")
                         val groups = detail.opt("vod_play_url").safeString("").split("$" + "$" + "$")
