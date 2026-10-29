@@ -377,8 +377,9 @@ class MainActivity : Activity() {
                                 is JSONArray -> rawUrl.optString(0, "")
                                 else -> rawUrl?.toString().orEmpty()
                             }.trim()
-                            if (url.startsWith("http://", true) || url.startsWith("https://", true)) {
-                                channels.add(LiveChannel(name, resolveReference(source.url, url), item.optString("group", item.optString("group-title", "直播"))))
+                            val resolvedUrl = resolveReference(source.url, url)
+                            if (resolvedUrl.startsWith("http://", true) || resolvedUrl.startsWith("https://", true)) {
+                                channels.add(LiveChannel(name, resolvedUrl, item.optString("group", item.optString("group-title", "直播"))))
                             }
                         }
                     }
