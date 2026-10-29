@@ -338,7 +338,7 @@ class MainActivity : Activity() {
                 if (channels.isEmpty() && source.url.isNotBlank()) {
                     val (code, body) = getText(source.url)
                     if (code !in 200..399) error("直播源 HTTP $code")
-                    val trimmed = body.trimStart('\\uFEFF', ' ', '\\n', '\\r', '\\t')
+                    val trimmed = body.trim().removePrefix("\uFEFF")
                     if (trimmed.startsWith("#EXTM3U", true) || trimmed.contains("#EXTINF", true)) {
                         var pendingName = ""
                         var pendingGroup = "直播"
@@ -577,7 +577,7 @@ class MainActivity : Activity() {
                     val body = (if (code in 200..399) connection.inputStream else connection.errorStream)
                         ?.use { stream -> String(stream.readBytes().take(1024 * 1024).toByteArray(), Charset.forName("UTF-8")) } ?: ""
                     if (code !in 200..399) error("HTTP $code；Content-Type：$contentType")
-                    val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+                    val trimmed = body.trim().removePrefix("\uFEFF")
                     val json = runCatching { JSONObject(trimmed) }.getOrNull()
                         ?: error("接口没有返回 JSON 对象。Content-Type：$contentType；响应开头：${trimmed.take(160)}")
                     val data = json.optJSONObject("data") ?: json
@@ -1077,7 +1077,7 @@ class MainActivity : Activity() {
                         val bytes = it.readBytes()
                         String(bytes.take(64 * 1024).toByteArray(), Charset.forName("UTF-8"))
                     } ?: ""
-                    val trimmed = body.trimStart('\uFEFF', ' ', '\n', '\r', '\t')
+                    val trimmed = body.trim().removePrefix("\uFEFF")
                     val jsonObject = runCatching { JSONObject(trimmed) }.getOrNull()
                     val jsonArray = if (jsonObject == null) runCatching { JSONArray(trimmed) }.getOrNull() else null
                     val fields = jsonObject?.keys()?.asSequence()?.take(40)?.toList().orEmpty()
