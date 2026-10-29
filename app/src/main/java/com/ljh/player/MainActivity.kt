@@ -414,7 +414,8 @@ class MainActivity : Activity() {
                         .put("url", entry.url)
                         .put("headers", headers))
                 }
-                val playlistPayload = playlistJson.toString()
+                val playlistFile = java.io.File(cacheDir, "live-playlist.json")
+                playlistFile.writeText(playlistJson.toString(), Charsets.UTF_8)
                 output.text = "直播源：${source.name}\n频道：${channels.size} 个\n分组：${groups.size} 个"
                 itemList.addView(actionButton("返回直播源列表") { loadLiveChannels() })
                 groups.forEach { (group, entries) ->
@@ -430,7 +431,7 @@ class MainActivity : Activity() {
                                 .putExtra("title", channel.name)
                                 .putExtra("url", channel.url)
                                 .putExtra("headers", playlistJson.optJSONObject(channels.indexOf(channel))?.optJSONObject("headers")?.toString() ?: "{}")
-                                .putExtra("playlist", playlistPayload)
+                                .putExtra("playlist_file", playlistFile.absolutePath)
                                 .putExtra("playlist_index", channels.indexOf(channel)))
                         })
                     }
