@@ -930,6 +930,19 @@ class MainActivity : Activity() {
                 val json = loaded.second
                 output.text = "Spider：${loaded.third}\n分类：${json.optJSONArray("class")?.length() ?: 0}\n影片：${json.optJSONArray("list")?.length() ?: 0}"
                 itemList.removeAllViews()
+                val spiderSearchInput = EditText(this).apply {
+                    hint = "搜索此 Spider 站点"
+                    isSingleLine = true
+                    textSize = 16f
+                    setTextColor(0xFFFFFFFF.toInt())
+                    setHintTextColor(0xFF8B96A9.toInt())
+                }
+                itemList.addView(spiderSearchInput)
+                itemList.addView(actionButton("搜索 Spider 站点") {
+                    val keyword = spiderSearchInput.text.toString().trim()
+                    if (keyword.isBlank()) showStatus("请输入搜索关键词")
+                    else loadSpiderSearch(spider, site, keyword)
+                })
                 val categories = json.optJSONArray("class") ?: JSONArray()
                 for (i in 0 until categories.length()) {
                     val cat = categories.optJSONObject(i) ?: continue
@@ -966,6 +979,57 @@ class MainActivity : Activity() {
             }
         }
         return parts.joinToString("\nCaused by: ")
+    }
+
+    private fun loadSpiderSearch(spider: Any, site: SiteInfo, keyword: String) {
+        showStatus("正在搜索 Spider 站点：$keyword")
+        output.text = "站点：\${site.name}\n关键词：$keyword\n正在调用 Spider 搜索接口…"
+        itemList.removeAllViews()
+        executor.execute {
+            val result = runCatching {
+                val candidates = spider.javaClass.methods.filter {
+                    it.name == "searchContent" && it.parameterTypes.isNotEmpty() &&
+                        it.parameterTypes[0] == String::class.java &&
+                        it.parameterTypes.size in 2..3
+                }.sortedBy { it.parameterTypes.size }
+                val method = candidates.firstOrNull() ?: error("此 Spider 没有兼容的 searchContent(String, …) 方法")
+                val args = when (method.parameterTypes.size) {
+                    2 -> arrayOf<Any?>(keyword, false)
+                    3 -> {
+                        val third = method.parameterTypes[2]
+                        val ext = runCatching {
+                            val obj = JSONObject(site.ext.ifBlank { "{}" })
+                            HashMap<String, String>().apply {
+                                val keys = obj.keys()
+                                while (keys.hasNext()) {
+                                    val key = keys.next()
+                                    put(key, obj.opt(key).safeString(""))
+                                }
+                            }
+                        }.getOrElse { HashMap<String, String>() }
+                        arrayOf(keyword, false, if (java.util.Map::class.java.isAssignableFrom(third)) ext else site.ext)
+                    }
+                    else -> error("不支持的 Spider 搜索接口")
+                }
+                val response = invokeSpiderMethod(method, spider, *args)?.toString().orEmpty()
+                val json = JSONObject(response)
+                val data = json.optJSONObject("data") ?: json
+                val videos = data.optJSONArray("list") ?: json.optJSONArray("list") ?: JSONArray()
+                json to videos
+            }
+            runOnUiThread {
+                val value = result.getOrNull()
+                if (value == null) {
+                    output.text = "Spider 搜索失败：\${result.exceptionOrNull()?.let { describeSpiderError(it) } ?: "未知错误"}"
+                    showStatus("Spider 搜索失败")
+                    return@runOnUiThread
+                }
+                val videos = value.second
+                output.text = "站点：\${site.name}\n关键词：$keyword\n搜索结果：\${videos.length()} 部"
+                addSpiderVideoButtons(spider, site, videos)
+                showStatus("Spider 搜索完成：\${videos.length()} 部")
+            }
+        }
     }
 
     private fun loadSpiderCategory(spider: Any, site: SiteInfo, categoryId: String) {
