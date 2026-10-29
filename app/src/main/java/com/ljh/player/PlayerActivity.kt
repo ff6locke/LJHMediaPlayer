@@ -27,6 +27,7 @@ class PlayerActivity : Activity() {
     private var playlist = JSONArray()
     private var playlistIndex = -1
     private var currentTitle = "LJHPlayer"
+    private var playlistItemLabel = "频道"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,6 +67,7 @@ class PlayerActivity : Activity() {
             }
         }.getOrDefault(JSONArray())
         playlistIndex = intent.getIntExtra("playlist_index", -1)
+        playlistItemLabel = intent.getStringExtra("playlist_label")?.takeIf { it.isNotBlank() } ?: "频道"
         if (!url.startsWith("https://", true) && !url.startsWith("http://", true)) {
             message.text = "播放地址无效：\n$url"
             setContentView(root)
@@ -79,11 +81,11 @@ class PlayerActivity : Activity() {
                 gravity = android.view.Gravity.CENTER
             }
             controls.addView(Button(this).apply {
-                text = "上一频道"
+                text = "上一$playlistItemLabel"
                 setOnClickListener { playPlaylistOffset(-1) }
             })
             controls.addView(Button(this).apply {
-                text = "下一频道"
+                text = "下一$playlistItemLabel"
                 setOnClickListener { playPlaylistOffset(1) }
             })
             root.addView(controls, FrameLayout.LayoutParams(-1, -2, android.view.Gravity.BOTTOM))
