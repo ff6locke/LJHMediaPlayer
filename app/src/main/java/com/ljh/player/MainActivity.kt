@@ -1007,7 +1007,7 @@ class MainActivity : Activity() {
                                 }
                             }
                         }.getOrElse { HashMap<String, String>() }
-                        arrayOf(keyword, false, if (java.util.Map::class.java.isAssignableFrom(third)) ext else site.ext)
+                        arrayOf(keyword, false, when { java.util.Map::class.java.isAssignableFrom(third) -> ext; third == JSONObject::class.java -> runCatching { JSONObject(site.ext.ifBlank { "{}" }) }.getOrElse { JSONObject() }; else -> site.ext })
                     }
                     else -> error("不支持的 Spider 搜索接口")
                 }
