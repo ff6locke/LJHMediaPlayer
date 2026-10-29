@@ -9,7 +9,7 @@ LJHPlayer is a Kotlin Android TV / Android TV box player that reads TVBox-style 
 - For standard CMS JSON sites (`type: 0`), load categories and video lists, filter by category, and page through results.
 - Search a CMS site by keyword, load a video's detail response, split `vod_play_from` / `vod_play_url` into source lines and episodes, and open an episode in the player.
 - Run compatible CatVod-style Spider sites when the configured JAR and class ABI are compatible. The loader attempts the CatVod Spider `Init.init(Context)` bootstrap before constructing the site class and refreshes the site JAR when explicitly run. Third-party JARs are executable code; only use sources you trust.
-- Read the top-level `lives` array, list live sources, fetch M3U/M3U8 channel playlists or JSON channel lists, group channels by `group-title`, and launch HTTP(S) channels in the Media3 player. M3U `#EXTVLCOPT:http-referrer` is passed as a Referer header.
+- Read the top-level `lives` array, list live sources, fetch M3U/M3U8 channel playlists or JSON channel lists (including a top-level JSON array), group channels, and launch HTTP(S) channels in the Media3 player. Relative playlist/channel URLs are resolved against the source URL. M3U `#EXTVLCOPT:http-referrer` and `#EXTVLCOPT:http-user-agent` are passed as request headers; supported JSON channel entries may also provide `referer` and `user-agent`.
 - Play direct HTTP(S) media URLs with Media3, including common MP4, HLS/M3U8, and DASH/MPD streams. JSON headers such as Referer and Cookie can be passed to the player.
 
 ## Configure a TVBox source
@@ -47,7 +47,7 @@ The GitHub Actions workflow builds a debug APK on pushes to `main`, pull request
 ## Limitations
 
 - CMS JSON `type: 0` is the primary supported direct API format. XPath and other custom engines need their own adapters.
-- Live playlist support currently covers HTTP(S) M3U playlists and common JSON `channels` arrays; provider-specific live formats, EPG, catch-up, and complex per-channel request headers are not fully implemented.
+- Live playlist support covers HTTP(S) M3U playlists and common JSON channel arrays. EPG display, catch-up playback, multicast/UDP sources, and provider-specific playlist schemas are not implemented yet.
 - Spider execution is best-effort and depends on the JAR's class names, ABI, runtime dependencies, and initialization contract.
 - The player does not bypass DRM, paywalls, authentication, or a provider's access controls. A stream requiring an external resolver or DRM integration will not play as a plain direct URL.
 - Playback has not been claimed successful for every third-party configuration or source. Use only streams and content you are authorized to access.
