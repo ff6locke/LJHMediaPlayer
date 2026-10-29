@@ -366,20 +366,29 @@ class MainActivity : Activity() {
                             }
                         }
                     } else {
-                        val json = JSONObject(trimmed)
-                        val array = json.optJSONArray("channels") ?: json.optJSONArray("data") ?: json.optJSONArray("lives")
+                        val jsonObject = runCatching { JSONObject(trimmed) }.getOrNull()
+                        val array = jsonObject?.optJSONArray("channels")
+                            ?: jsonObject?.optJSONArray("data")
+                            ?: jsonObject?.optJSONArray("lives")
+                            ?: runCatching { JSONArray(trimmed) }.getOrNull()
                             ?: error("直播源不是 M3U，且 JSON 中没有 channels/data/lives 数组")
                         for (i in 0 until array.length()) {
                             val item = array.optJSONObject(i) ?: continue
-                            val name = item.optString("name", item.optString("title", "频道 ${i + 1}"))
-                            val rawUrl = item.opt("url") ?: item.opt("play")
+                            val name = item.optString("name", item.optString("title", item.optString("tvg-name", "频道 ${i + 1}")))
+                            val rawUrl = item.opt("url") ?: item.opt("play") ?: item.opt("urls")
                             val url = when (rawUrl) {
                                 is JSONArray -> rawUrl.optString(0, "")
                                 else -> rawUrl?.toString().orEmpty()
-                            }.trim()
+                            }.substringBefore("|||").trim()
                             val resolvedUrl = resolveReference(source.url, url)
                             if (resolvedUrl.startsWith("http://", true) || resolvedUrl.startsWith("https://", true)) {
-                                channels.add(LiveChannel(name, resolvedUrl, item.optString("group", item.optString("group-title", "直播"))))
+                                channels.add(LiveChannel(
+                                    name,
+                                    resolvedUrl,
+                                    item.optString("group", item.optString("group-title", item.optString("groupTitle", "直播"))),
+                                    item.optString("referer", item.optString("http-referrer", "")),
+                                    item.optString("user-agent", item.optString("userAgent", ""))
+                                ))
                             }
                         }
                     }
