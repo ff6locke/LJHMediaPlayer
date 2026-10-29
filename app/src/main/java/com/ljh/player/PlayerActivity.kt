@@ -58,7 +58,13 @@ class PlayerActivity : Activity() {
         val title = intent.getStringExtra("title")?.takeIf { it.isNotBlank() } ?: "LJHPlayer"
         val url = intent.getStringExtra("url")?.trim().orEmpty()
         currentTitle = title
-        playlist = runCatching { JSONArray(intent.getStringExtra("playlist").orEmpty()) }.getOrDefault(JSONArray())
+        playlist = runCatching {
+            val path = intent.getStringExtra("playlist_file")
+            when {
+                !path.isNullOrBlank() -> JSONArray(java.io.File(path).readText(Charsets.UTF_8))
+                else -> JSONArray(intent.getStringExtra("playlist").orEmpty())
+            }
+        }.getOrDefault(JSONArray())
         playlistIndex = intent.getIntExtra("playlist_index", -1)
         if (!url.startsWith("https://", true) && !url.startsWith("http://", true)) {
             message.text = "播放地址无效：\n$url"
