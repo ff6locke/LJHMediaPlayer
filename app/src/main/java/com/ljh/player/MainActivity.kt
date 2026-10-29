@@ -1038,7 +1038,7 @@ class MainActivity : Activity() {
             val result = runCatching {
                 val method = spider.javaClass.methods.firstOrNull { it.name == "categoryContent" && it.parameterTypes.size == 4 } ?: error("缺少 categoryContent 方法")
                 val extend = runCatching { JSONObject(site.ext).let { obj -> HashMap<String, String>().apply { obj.keys().forEach { key -> put(key, obj.opt(key).safeString("")) } } } }.getOrElse { HashMap() }
-                JSONObject(method.invoke(spider, categoryId, "1", true, extend)?.toString().orEmpty())
+                JSONObject(invokeSpiderMethod(method, spider, categoryId, "1", true, extend)?.toString().orEmpty())
             }
             runOnUiThread {
                 val json = result.getOrNull()
@@ -1061,7 +1061,7 @@ class MainActivity : Activity() {
                 executor.execute {
                     val result = runCatching {
                         val method = spider.javaClass.methods.firstOrNull { it.name == "detailContent" && it.parameterTypes.size == 1 } ?: error("缺少 detailContent 方法")
-                        val detailJson = JSONObject(method.invoke(spider, listOf(id))?.toString().orEmpty())
+                        val detailJson = JSONObject(invokeSpiderMethod(method, spider, listOf(id))?.toString().orEmpty())
                         val detail = detailJson.optJSONArray("list")?.optJSONObject(0) ?: detailJson.optJSONObject("vod") ?: error("详情中没有影片")
                         val flags = detail.opt("vod_play_from").safeString("").split("$" + "$" + "$")
                         val groups = detail.opt("vod_play_url").safeString("").split("$" + "$" + "$")
@@ -1078,7 +1078,7 @@ class MainActivity : Activity() {
                             executor.execute {
                                 val playResult = runCatching {
                                     val method = spider.javaClass.methods.firstOrNull { it.name == "playerContent" && it.parameterTypes.size == 3 } ?: error("缺少 playerContent 方法")
-                                    val playJson = JSONObject(method.invoke(spider, ep.first, ep.third, emptyList<String>())?.toString().orEmpty())
+                                    val playJson = JSONObject(invokeSpiderMethod(method, spider, ep.first, ep.third, emptyList<String>())?.toString().orEmpty())
                                     val url = playJson.opt("url").safeString(ep.third)
                                     if (!url.startsWith("http://", true) && !url.startsWith("https://", true)) error("无效播放地址：$url")
                                     val headers = playJson.optJSONObject("header") ?: playJson.optJSONObject("headers") ?: JSONObject()
