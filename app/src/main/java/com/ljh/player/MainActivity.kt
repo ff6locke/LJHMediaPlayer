@@ -983,7 +983,7 @@ class MainActivity : Activity() {
 
     private fun loadSpiderSearch(spider: Any, site: SiteInfo, keyword: String) {
         showStatus("正在搜索 Spider 站点：$keyword")
-        output.text = "站点：\${site.name}\n关键词：$keyword\n正在调用 Spider 搜索接口…"
+        output.text = "站点：${site.name}\n关键词：$keyword\n正在调用 Spider 搜索接口…"
         itemList.removeAllViews()
         executor.execute {
             val result = runCatching {
@@ -1020,14 +1020,14 @@ class MainActivity : Activity() {
             runOnUiThread {
                 val value = result.getOrNull()
                 if (value == null) {
-                    output.text = "Spider 搜索失败：\${result.exceptionOrNull()?.let { describeSpiderError(it) } ?: "未知错误"}"
+                    output.text = "Spider 搜索失败：${result.exceptionOrNull()?.let { describeSpiderError(it) } ?: "未知错误"}"
                     showStatus("Spider 搜索失败")
                     return@runOnUiThread
                 }
                 val videos = value.second
-                output.text = "站点：\${site.name}\n关键词：$keyword\n搜索结果：\${videos.length()} 部"
+                output.text = "站点：${site.name}\n关键词：$keyword\n搜索结果：${videos.length()} 部"
                 addSpiderVideoButtons(spider, site, videos)
-                showStatus("Spider 搜索完成：\${videos.length()} 部")
+                showStatus("Spider 搜索完成：${videos.length()} 部")
             }
         }
     }
