@@ -10,7 +10,7 @@ LJHPlayer is a Kotlin Android TV / Android TV box player that reads TVBox-style 
 - Search a CMS site by keyword, load a video's detail response, split `vod_play_from` / `vod_play_url` into source lines and episodes, and open an episode in the player.
 - Run compatible CatVod-style Spider sites when the configured JAR and class ABI are compatible. The loader attempts the CatVod Spider `Init.init(Context)` bootstrap before constructing the site class and refreshes the site JAR when explicitly run. Third-party JARs are executable code; only use sources you trust.
 - Read the top-level `lives` array, list live sources, fetch M3U/M3U8 channel playlists or JSON channel lists (including a top-level JSON array), group channels, and launch HTTP(S) channels in the Media3 player. Relative playlist/channel URLs are resolved against the source URL. M3U `#EXTVLCOPT:http-referrer` and `#EXTVLCOPT:http-user-agent` are passed as request headers; supported JSON channel entries may also provide `referer` and `user-agent`.
-- Play direct HTTP(S) media URLs with Media3, including common MP4, HLS/M3U8, and DASH/MPD streams. JSON headers such as Referer and Cookie can be passed to the player.
+- Play direct HTTP(S) media URLs with Media3, including common MP4, HLS/M3U8, and DASH/MPD streams. JSON headers such as Referer and Cookie can be passed to the player. Live playback includes previous/next channel controls, and large channel lists are stored in app cache rather than sent through a large Android Intent.
 
 ## Configure a TVBox source
 
